@@ -1,7 +1,7 @@
 """
 finetune.py
-
-Fine-tunes OpenVLA via LoRA.
+训练脚本
+该脚本目的：用于训练OpenVLA模型，使用LoRA微调。
 """
 
 import os

@@ -1,5 +1,6 @@
 # scripts/train_cl_lora.py
 # 双模型架构（教师和学生）
+#该脚本目的：用于训练双模型架构（教师和学生）的模型，使用CL-Lora微调。
 import dataclasses
 import functools
 import logging
@@ -19,8 +20,6 @@ import tqdm_loggable.auto as tqdm
 import wandb
 import tyro
 import pathlib
-
-
 import openpi.models.model as _model
 import openpi.shared.array_typing as at
 import openpi.shared.nnx_utils as nnx_utils

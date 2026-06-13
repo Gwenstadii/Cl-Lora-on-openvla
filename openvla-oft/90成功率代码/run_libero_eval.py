@@ -1,7 +1,7 @@
 """
 run_libero_eval.py
-
-Evaluates a trained policy in a LIBERO simulation benchmark task suite.
+评估脚本
+该脚本目的：用于评估训练好的策略在LIBERO模拟基准任务套件上的性能。
 """
 
 import json
