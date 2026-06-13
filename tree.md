@@ -18,12 +18,14 @@
 .
 ├── openvla-oft/                          # ★ 主代码目录
 │   ├── vla-scripts/                      # 训练、部署、数据处理脚本
-│   │   ├── finetune.py                   #   主训练脚本（DDP/FSDP，~50 个可配参数）
-│   │   ├── cl_lora.py                    #   CL-LoRA 核心实现（CLLoRALinear + 注入函数）
+│   │   ├── finetune.py                   #   主训练脚本（DDP/FSDP，标准 LoRA + CL-LoRA 单任务微调）【已修改】
+│   │   ├── train_cl_lora.py              #   CL-LoRA 持续学习训练脚本（Teacher KD + Replay + 多阶段）【新建】
+│   │   ├── cl_lora.py                    #   CL-LoRA 核心实现（CLLoRALinear + 注入函数，可配置参数）【已修改】
 │   │   ├── deploy.py                     #   FastAPI 模型服务器（/act 接口，用于 ALOHA 部署）
 │   │   ├── run_libero_eval.py            #   LIBERO 评估入口
-│   │   ├── build_replay_buffer_openvla.py #  回放缓冲构建（物理分割 + 原型选择 + 关键帧保存）
-│   │   ├── replay_dataset.py             #   回放数据 PyTorch Dataset 加载器
+│   │   ├── build_replay_buffer_openvla.py #  原型回放缓冲构建（物理分割 + 原型选择 + 关键帧保存）
+│   │   ├── build_uniform_replay_buffer.py #  均匀回放缓冲构建（同预算时间轴均匀抽样基线）【新建】
+│   │   ├── replay_dataset.py             #   回放数据 PyTorch Dataset 加载器（兼容两种回放缓冲）
 │   │   ├── merge_lora_weights_and_save.py #  LoRA 权重合并与保存
 │   │   └── check_rlds_keys.py            #   RLDS 数据集结构诊断工具
 │   │
@@ -47,7 +49,10 @@
 │   │   ├── lora.py                       #   LoRA 模块（正交初始化 / freeze_A / block_scale）
 │   │   ├── config.py                     #   训练配置系统（Assets/Data/Rehearsal/Train）
 │   │   ├── train_cl_lora.py              #   CL-LoRA 训练脚本（教师模型 + KD + 回放损失）
-│   │   └── build_replay_buffer.py        #   离线回放缓冲构建（物理分割 + 原型 + 关键帧）
+│   │   ├── build_replay_buffer.py        #   离线回放缓冲构建（物理分割 + 原型 + 关键帧）
+│   │   └── reference/                    #   PI 源码参考（迁移用）
+│   │       ├── build_uniform_replay_buffer.py  # 均匀回放构建器参考
+│   │       └── data_loader.py                 # 数据加载器参考
 │   │
 │   ├── prismatic/                        # ★ OpenVLA 模型架构核心库
 │   │   ├── conf/

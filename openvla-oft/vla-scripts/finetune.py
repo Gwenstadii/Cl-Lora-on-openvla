@@ -33,6 +33,7 @@ from experiments.robot.openvla_utils import (
     model_is_on_hf_hub,
     update_auto_map,
 )
+from cl_lora import inject_cl_lora_into_model
 
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
 from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction
@@ -109,6 +110,14 @@ class FinetuneConfig:
     merge_lora_during_training: bool = True          # If True, merges LoRA weights and saves result during training
                                                      #   Note: Merging can be very slow on some machines. If so, set to
                                                      #         False and merge final checkpoint offline!
+
+    # CL-LoRA (continual learning LoRA)
+    use_cl_lora: bool = False                        # If True, injects CL-LoRA (CLLoRALinear) instead of standard PEFT LoRA
+    shared_depth: int = 16                           # Number of shared (shallow) layers with frozen LoRA-A
+    orthogonal_init: bool = True                     # If True, uses orthogonal init for shared-layer LoRA-A
+    freeze_a: bool = True                            # If True, freezes LoRA-A in shared layers to protect old knowledge
+    use_block_scale: bool = True                     # If True, adds learnable block_scale gates in specific layers
+    clip_weight: float = 1.0                         # Scaling clip after orthogonal init (1.0 = no clipping)
 
     # Logging
     wandb_entity: str = "your-wandb-entity"          # Name of WandB entity
@@ -842,16 +851,31 @@ def finetune(cfg: FinetuneConfig) -> None:
     # Set number of images in VLA input
     vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
 
-    # LoRA setup
+    # LoRA / CL-LoRA setup
     if cfg.use_lora:
-        lora_config = LoraConfig(
-            r=cfg.lora_rank,
-            lora_alpha=min(cfg.lora_rank, 16),
-            lora_dropout=cfg.lora_dropout,
-            target_modules="all-linear",
-            init_lora_weights="gaussian",
-        )
-        vla = get_peft_model(vla, lora_config)
+        if cfg.use_cl_lora:
+            total_layers = 32
+            shared_split_ratio = max(1, cfg.shared_depth) / total_layers
+            vla = inject_cl_lora_into_model(
+                vla,
+                rank=cfg.lora_rank,
+                alpha=min(cfg.lora_rank, 16),
+                dropout=cfg.lora_dropout,
+                shared_split_ratio=shared_split_ratio,
+                orthogonal_init=cfg.orthogonal_init,
+                freeze_a=cfg.freeze_a,
+                use_block_scale=cfg.use_block_scale,
+            )
+            print(f"[CL-LoRA] Injected with shared_depth={cfg.shared_depth}, rank={cfg.lora_rank}")
+        else:
+            lora_config = LoraConfig(
+                r=cfg.lora_rank,
+                lora_alpha=min(cfg.lora_rank, 16),
+                lora_dropout=cfg.lora_dropout,
+                target_modules="all-linear",
+                init_lora_weights="gaussian",
+            )
+            vla = get_peft_model(vla, lora_config)
         vla.print_trainable_parameters()
 
     # FiLM setup
