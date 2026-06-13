@@ -1,0 +1,63 @@
+# ===== Large data / models / checkpoints =====
+*.safetensors
+*.tfrecord
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.h5
+*.msgpack
+*.zip
+*.tar
+*.tar.gz
+
+# ===== Directories with large files =====
+LOGS/
+models/
+hf_cache/
+conda_envs/
+.autodl/
+
+# ===== modified_libero_rlds: keep metadata, ignore data =====
+modified_libero_rlds/.cache/
+modified_libero_rlds/*/1.0.0/*.tfrecord-*
+modified_libero_rlds/*/**/*.lock
+
+# ===== openvla-oft: nested git and large assets =====
+openvla-oft/.git/
+openvla-oft/wandb/
+openvla-oft/LIBERO/libero/libero/assets/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# ===== Virtual environments =====
+.env
+.venv
+env/
+venv/
+ENV/
+
+# ===== IDE / Editor =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ===== Misc =====
+*.log
+*.back.*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/

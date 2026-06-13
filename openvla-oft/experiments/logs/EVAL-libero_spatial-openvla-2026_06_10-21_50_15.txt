@@ -1,0 +1,2 @@
+Task suite: libero_spatial, targeting Task: pick up the chocolate pudding and place it in the basket
+Final results: 0/0 (Rate: 0)

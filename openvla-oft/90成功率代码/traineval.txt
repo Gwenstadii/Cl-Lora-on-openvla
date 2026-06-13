@@ -1,0 +1,22 @@
+训练·
+torchrun --standalone --nproc_per_node 1 vla-scripts/finetune.py \
+ --vla_path "/root/autodl-tmp/models/openvla-7b" \
+ --data_root_dir "/root/autodl-tmp/modified_libero_rlds" \
+ --dataset_name "libero_spatial_no_noops" \
+ --run_id_override "overfit_test_2000_steps_bs1" \
+ --batch_size 1 \
+ --grad_accumulation_steps 8 \
+ --learning_rate 5e-4 \
+ --use_lora True \
+ --lora_rank 16 \
+ --max_steps 2000 \
+ --save_freq 2000 \
+ --image_aug True \
+ --run_root_dir "/root/autodl-tmp/LOGS"
+评估
+export HF_ENDPOINT=https://hf-mirror.com
+export PYTHONPATH="/root/autodl-tmp/openvla-oft/LIBERO:/root/autodl-tmp/openvla-oft:$PYTHONPATH"
+
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS/overfit_test_2000_steps_bs1--2000_chkpt \
+  --task_suite_name libero_spatial

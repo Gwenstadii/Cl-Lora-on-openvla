@@ -1,0 +1,2 @@
+Task suite: libero_spatial, targeting Task: pick up the black bowl next to the cookie box and place it on the plate
+Final results: 0/0 (Rate: 0)

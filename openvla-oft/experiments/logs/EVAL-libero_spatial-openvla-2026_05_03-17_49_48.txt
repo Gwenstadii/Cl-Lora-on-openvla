@@ -1,0 +1,355 @@
+Task suite: libero_spatial, targeting Task ID: 0
+Using default initial states
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 1...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=1--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 1
+# successes: 1 (100.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 2...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=2--success=False--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: False
+# episodes completed so far: 2
+# successes: 1 (50.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 3...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=3--success=False--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: False
+# episodes completed so far: 3
+# successes: 1 (33.3%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 4...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=4--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 4
+# successes: 2 (50.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 5...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=5--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 5
+# successes: 3 (60.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 6...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=6--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 6
+# successes: 4 (66.7%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 7...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=7--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 7
+# successes: 5 (71.4%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 8...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=8--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 8
+# successes: 6 (75.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 9...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=9--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 9
+# successes: 7 (77.8%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 10...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=10--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 10
+# successes: 8 (80.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 11...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=11--success=False--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: False
+# episodes completed so far: 11
+# successes: 8 (72.7%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 12...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=12--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 12
+# successes: 9 (75.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 13...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=13--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 13
+# successes: 10 (76.9%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 14...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=14--success=False--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: False
+# episodes completed so far: 14
+# successes: 10 (71.4%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 15...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=15--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 15
+# successes: 11 (73.3%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 16...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=16--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 16
+# successes: 12 (75.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 17...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=17--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 17
+# successes: 13 (76.5%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 18...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=18--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 18
+# successes: 14 (77.8%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 19...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=19--success=False--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: False
+# episodes completed so far: 19
+# successes: 14 (73.7%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 20...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=20--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 20
+# successes: 15 (75.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 21...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=21--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 21
+# successes: 16 (76.2%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 22...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=22--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 22
+# successes: 17 (77.3%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 23...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=23--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 23
+# successes: 18 (78.3%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 24...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=24--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 24
+# successes: 19 (79.2%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 25...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=25--success=False--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: False
+# episodes completed so far: 25
+# successes: 19 (76.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 26...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=26--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 26
+# successes: 20 (76.9%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 27...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=27--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 27
+# successes: 21 (77.8%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 28...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=28--success=False--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: False
+# episodes completed so far: 28
+# successes: 21 (75.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 29...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=29--success=False--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: False
+# episodes completed so far: 29
+# successes: 21 (72.4%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 30...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=30--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 30
+# successes: 22 (73.3%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 31...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=31--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 31
+# successes: 23 (74.2%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 32...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=32--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 32
+# successes: 24 (75.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 33...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=33--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 33
+# successes: 25 (75.8%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 34...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=34--success=False--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: False
+# episodes completed so far: 34
+# successes: 25 (73.5%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 35...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=35--success=False--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: False
+# episodes completed so far: 35
+# successes: 25 (71.4%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 36...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=36--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 36
+# successes: 26 (72.2%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 37...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=37--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 37
+# successes: 27 (73.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 38...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=38--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 38
+# successes: 28 (73.7%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 39...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=39--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 39
+# successes: 29 (74.4%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 40...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=40--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 40
+# successes: 30 (75.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 41...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=41--success=False--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: False
+# episodes completed so far: 41
+# successes: 30 (73.2%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 42...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=42--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 42
+# successes: 31 (73.8%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 43...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=43--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 43
+# successes: 32 (74.4%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 44...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=44--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 44
+# successes: 33 (75.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 45...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=45--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 45
+# successes: 34 (75.6%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 46...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=46--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 46
+# successes: 35 (76.1%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 47...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=47--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 47
+# successes: 36 (76.6%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 48...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=48--success=False--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: False
+# episodes completed so far: 48
+# successes: 36 (75.0%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 49...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=49--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 49
+# successes: 37 (75.5%)
+
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Starting episode 50...
+Saved rollout MP4 at path ./rollouts/2026_05_03/2026_05_03-17_49_48--openvla_oft--episode=50--success=True--task=pick_up_the_black_bowl_between_the_plate_and_the_r.mp4
+Success: True
+# episodes completed so far: 50
+# successes: 38 (76.0%)
+Current task success rate: 0.76
+Current total success rate: 0.76
+Final results: 38/50 (Rate: 0.76)

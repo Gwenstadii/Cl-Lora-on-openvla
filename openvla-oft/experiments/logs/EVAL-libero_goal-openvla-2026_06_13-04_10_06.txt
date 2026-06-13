@@ -1,0 +1,355 @@
+Task suite: libero_goal, targeting Task: turn on the stove
+Using default initial states
+
+Task: turn on the stove
+Starting episode 1...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=1--success=True--task=turn_on_the_stove.mp4
+Success: True
+# episodes completed so far: 1
+# successes: 1 (100.0%)
+
+Task: turn on the stove
+Starting episode 2...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=2--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 2
+# successes: 1 (50.0%)
+
+Task: turn on the stove
+Starting episode 3...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=3--success=True--task=turn_on_the_stove.mp4
+Success: True
+# episodes completed so far: 3
+# successes: 2 (66.7%)
+
+Task: turn on the stove
+Starting episode 4...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=4--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 4
+# successes: 2 (50.0%)
+
+Task: turn on the stove
+Starting episode 5...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=5--success=True--task=turn_on_the_stove.mp4
+Success: True
+# episodes completed so far: 5
+# successes: 3 (60.0%)
+
+Task: turn on the stove
+Starting episode 6...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=6--success=True--task=turn_on_the_stove.mp4
+Success: True
+# episodes completed so far: 6
+# successes: 4 (66.7%)
+
+Task: turn on the stove
+Starting episode 7...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=7--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 7
+# successes: 4 (57.1%)
+
+Task: turn on the stove
+Starting episode 8...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=8--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 8
+# successes: 4 (50.0%)
+
+Task: turn on the stove
+Starting episode 9...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=9--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 9
+# successes: 4 (44.4%)
+
+Task: turn on the stove
+Starting episode 10...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=10--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 10
+# successes: 4 (40.0%)
+
+Task: turn on the stove
+Starting episode 11...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=11--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 11
+# successes: 4 (36.4%)
+
+Task: turn on the stove
+Starting episode 12...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=12--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 12
+# successes: 4 (33.3%)
+
+Task: turn on the stove
+Starting episode 13...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=13--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 13
+# successes: 4 (30.8%)
+
+Task: turn on the stove
+Starting episode 14...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=14--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 14
+# successes: 4 (28.6%)
+
+Task: turn on the stove
+Starting episode 15...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=15--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 15
+# successes: 4 (26.7%)
+
+Task: turn on the stove
+Starting episode 16...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=16--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 16
+# successes: 4 (25.0%)
+
+Task: turn on the stove
+Starting episode 17...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=17--success=True--task=turn_on_the_stove.mp4
+Success: True
+# episodes completed so far: 17
+# successes: 5 (29.4%)
+
+Task: turn on the stove
+Starting episode 18...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=18--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 18
+# successes: 5 (27.8%)
+
+Task: turn on the stove
+Starting episode 19...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=19--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 19
+# successes: 5 (26.3%)
+
+Task: turn on the stove
+Starting episode 20...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=20--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 20
+# successes: 5 (25.0%)
+
+Task: turn on the stove
+Starting episode 21...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=21--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 21
+# successes: 5 (23.8%)
+
+Task: turn on the stove
+Starting episode 22...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=22--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 22
+# successes: 5 (22.7%)
+
+Task: turn on the stove
+Starting episode 23...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=23--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 23
+# successes: 5 (21.7%)
+
+Task: turn on the stove
+Starting episode 24...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=24--success=True--task=turn_on_the_stove.mp4
+Success: True
+# episodes completed so far: 24
+# successes: 6 (25.0%)
+
+Task: turn on the stove
+Starting episode 25...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=25--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 25
+# successes: 6 (24.0%)
+
+Task: turn on the stove
+Starting episode 26...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=26--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 26
+# successes: 6 (23.1%)
+
+Task: turn on the stove
+Starting episode 27...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=27--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 27
+# successes: 6 (22.2%)
+
+Task: turn on the stove
+Starting episode 28...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=28--success=True--task=turn_on_the_stove.mp4
+Success: True
+# episodes completed so far: 28
+# successes: 7 (25.0%)
+
+Task: turn on the stove
+Starting episode 29...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=29--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 29
+# successes: 7 (24.1%)
+
+Task: turn on the stove
+Starting episode 30...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=30--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 30
+# successes: 7 (23.3%)
+
+Task: turn on the stove
+Starting episode 31...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=31--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 31
+# successes: 7 (22.6%)
+
+Task: turn on the stove
+Starting episode 32...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=32--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 32
+# successes: 7 (21.9%)
+
+Task: turn on the stove
+Starting episode 33...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=33--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 33
+# successes: 7 (21.2%)
+
+Task: turn on the stove
+Starting episode 34...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=34--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 34
+# successes: 7 (20.6%)
+
+Task: turn on the stove
+Starting episode 35...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=35--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 35
+# successes: 7 (20.0%)
+
+Task: turn on the stove
+Starting episode 36...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=36--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 36
+# successes: 7 (19.4%)
+
+Task: turn on the stove
+Starting episode 37...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=37--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 37
+# successes: 7 (18.9%)
+
+Task: turn on the stove
+Starting episode 38...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=38--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 38
+# successes: 7 (18.4%)
+
+Task: turn on the stove
+Starting episode 39...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=39--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 39
+# successes: 7 (17.9%)
+
+Task: turn on the stove
+Starting episode 40...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=40--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 40
+# successes: 7 (17.5%)
+
+Task: turn on the stove
+Starting episode 41...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=41--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 41
+# successes: 7 (17.1%)
+
+Task: turn on the stove
+Starting episode 42...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=42--success=True--task=turn_on_the_stove.mp4
+Success: True
+# episodes completed so far: 42
+# successes: 8 (19.0%)
+
+Task: turn on the stove
+Starting episode 43...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=43--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 43
+# successes: 8 (18.6%)
+
+Task: turn on the stove
+Starting episode 44...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=44--success=True--task=turn_on_the_stove.mp4
+Success: True
+# episodes completed so far: 44
+# successes: 9 (20.5%)
+
+Task: turn on the stove
+Starting episode 45...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=45--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 45
+# successes: 9 (20.0%)
+
+Task: turn on the stove
+Starting episode 46...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=46--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 46
+# successes: 9 (19.6%)
+
+Task: turn on the stove
+Starting episode 47...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=47--success=True--task=turn_on_the_stove.mp4
+Success: True
+# episodes completed so far: 47
+# successes: 10 (21.3%)
+
+Task: turn on the stove
+Starting episode 48...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=48--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 48
+# successes: 10 (20.8%)
+
+Task: turn on the stove
+Starting episode 49...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=49--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 49
+# successes: 10 (20.4%)
+
+Task: turn on the stove
+Starting episode 50...
+Saved rollout MP4 at path ./rollouts/2026_06_13/2026_06_13-04_10_06--openvla_oft--episode=50--success=False--task=turn_on_the_stove.mp4
+Success: False
+# episodes completed so far: 50
+# successes: 10 (20.0%)
+Current task success rate: 0.2
+Current total success rate: 0.2
+Final results: 10/50 (Rate: 0.2)

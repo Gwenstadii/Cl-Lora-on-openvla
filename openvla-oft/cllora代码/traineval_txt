@@ -1,0 +1,9 @@
+WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/finetune.py --vla_path "/root/autodl-tmp/models/openvla-7b" --data_root_dir "/root/autodl-tmp/modified_libero_rlds" --dataset_name "libero_spatial_no_noops" --run_id_override "cllora_pure_taskA_4k" --batch_size 4 --grad_accumulation_steps 8 --learning_rate 5e-4 --use_lora False --use_cl_lora True --shared_split_ratio 0.25 --merge_lora_during_training False --max_steps 4000 --save_freq 2000 --run_root_dir "/root/autodl-tmp/LOGS"
+
+export HF_ENDPOINT=https://hf-mirror.com
+export PYTHONPATH="/root/autodl-tmp/openvla-oft/LIBERO:/root/autodl-tmp/openvla-oft:$PYTHONPATH"
+
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS/cllora_pure_taskA_4k--4000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False

@@ -1,0 +1,180 @@
+Task suite: libero_spatial, targeting Task: pick up the black bowl next to the cookie box and place it on the plate
+Using default initial states
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 1...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=1--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 1
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 2...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=2--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 2
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 3...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=3--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 3
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 4...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=4--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 4
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 5...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=5--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 5
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 6...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=6--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 6
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 7...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=7--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 7
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 8...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=8--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 8
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 9...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=9--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 9
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 10...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=10--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 10
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 11...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=11--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 11
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 12...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=12--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 12
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 13...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=13--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 13
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 14...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=14--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 14
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 15...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=15--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 15
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 16...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=16--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 16
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 17...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=17--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 17
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 18...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=18--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 18
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 19...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=19--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 19
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 20...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=20--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 20
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 21...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=21--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 21
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 22...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=22--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 22
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 23...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=23--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 23
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 24...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=24--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 24
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 25...
+Saved rollout MP4 at path ./rollouts/2026_06_09/2026_06_09-01_18_34--openvla_oft--episode=25--success=False--task=pick_up_the_black_bowl_next_to_the_cookie_box_and_.mp4
+Success: False
+# episodes completed so far: 25
+# successes: 0 (0.0%)
+
+Task: pick up the black bowl next to the cookie box and place it on the plate
+Starting episode 26...
