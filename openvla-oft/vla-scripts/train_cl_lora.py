@@ -448,18 +448,22 @@ def _run_diffusion_sampling(
 def _build_replay_loaders(
     cfg: TrainCLConfig,
     batch_transform: RLDSBatchTransform,
-    device_id: int,
 ) -> Tuple[Optional[List[DataLoader]], Optional[List[Any]]]:
     """Build DataLoaders for each replay buffer directory."""
-    if not cfg.use_replay or not cfg.replay_buffer_dirs:
+    if not cfg.use_replay:
         return None, None
-
+    if not cfg.replay_buffer_dirs:
+        raise ValueError("--use_replay True but --replay_buffer_dirs is empty. "
+                         "Provide at least one replay buffer directory.")
     loaders = []
     iters = []
     replay_bs = cfg.replay_batch_size if cfg.replay_batch_size is not None else cfg.batch_size
 
     for buf_dir in cfg.replay_buffer_dirs:
         dataset = PrototypeReplayDataset(buf_dir, batch_transform)
+        if len(dataset) == 0:
+            raise RuntimeError(f"Replay buffer at {buf_dir} contains 0 samples. "
+                               "Check that the buffer was built correctly.")
         collator = PaddedCollatorForActionPrediction(
             model_max_length=2048, pad_token_id=0, padding_side="right"
         )
@@ -521,6 +525,7 @@ def log_metrics_to_wandb(metrics: dict, prefix: str, step: int, wandb_run) -> No
 @draccus.wrap()
 def train_cl_lora(cfg: TrainCLConfig) -> None:
     assert cfg.use_l1_regression or cfg.use_diffusion, "Must use L1 regression or diffusion action head."
+    assert cfg.max_steps > 0, f"max_steps must be > 0, got {cfg.max_steps}"
 
     cfg.vla_path = cfg.vla_path.rstrip("/")
     print(f"CL-LoRA Training | Stage {cfg.stage} | Dataset: {cfg.dataset_name}")
@@ -711,7 +716,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     )
 
     # ---- Replay loaders ----
-    replay_loaders, replay_iters = _build_replay_loaders(cfg, batch_transform, device_id)
+    replay_loaders, replay_iters = _build_replay_loaders(cfg, batch_transform)
 
     # ---- Metrics tracking ----
     recent_metrics = {
@@ -750,10 +755,9 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                 return_predictions=True,
             )
 
-            # 2. KD loss
+            # 2. KD loss (student_pred still has gradients; teacher runs with frozen params via swap)
             loss_kd = torch.tensor(0.0, device=device_id)
             if cfg.use_kd and teacher_snapshot is not None and student_pred is not None:
-                student_pred_detached = student_pred.detach().clone()
                 student_copy = swap_to_teacher(vla.module, action_head.module if action_head is not None else None, teacher_snapshot, device_id)
                 with torch.no_grad():
                     _, _, teacher_pred, _ = run_forward_pass_extended(
@@ -773,7 +777,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                     )
                 restore_student(vla.module, action_head.module if action_head is not None else None, student_copy)
                 if teacher_pred is not None:
-                    loss_kd = F.mse_loss(student_pred_detached, teacher_pred)
+                    loss_kd = F.mse_loss(student_pred, teacher_pred.detach())
 
             # 3. Replay loss
             loss_replay = torch.tensor(0.0, device=device_id)
@@ -860,7 +864,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
 
                 dist.barrier()
 
-            if log_step >= cfg.max_steps:
+            if gradient_step_idx > 0 and log_step >= cfg.max_steps:
                 print(f"Max step {cfg.max_steps} reached! Stopping...")
                 break
 
@@ -880,6 +884,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
 
     dist.barrier()
     print("CL-LoRA training complete.")
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

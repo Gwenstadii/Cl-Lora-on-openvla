@@ -254,6 +254,14 @@ def main():
                 
                 segment_count += 1
 
+    if sample_count == 0:
+        raise RuntimeError(
+            f"构建完成但生成了 0 个样本！请检查:\n"
+            f"  1. target_task_name 是否与数据集中的指令完全一致: '{cfg.target_task_name}'\n"
+            f"  2. 数据集路径是否正确: {cfg.data_root_dir}/{cfg.dataset_name}\n"
+            f"  3. min_segment_frames 是否过大 (当前: {cfg.min_segment_frames})"
+        )
+
     LOGGER.info(f"原型回放池构建完成！Segments: {segment_count} | Samples: {sample_count}")
     LOGGER.info(f"输出目录: {out_dir}")
 

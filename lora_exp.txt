@@ -1,0 +1,176 @@
+基于文档内容，按 TaskA / TaskB / TaskC / TaskD 拆分，区分训练命令、前置脚本、评估命令，路径、参数完全保留原文。
+统一环境前置（所有评估均需先执行）
+
+export HF_ENDPOINT=https://hf-mirror.com
+export PYTHONPATH="/root/autodl-tmp/openvla-oft/LIBERO:/root/autodl-tmp/openvla-oft:$PYTHONPATH"
+
+一、TaskA
+1. 训练命令
+cd /root/openvla-oft
+
+torchrun --standalone --nproc_per_node 1 vla-scripts/finetune.py \
+ --vla_path "/root/autodl-tmp/models/openvla-7b" \
+ --data_root_dir "/root/autodl-tmp/modified_libero_rlds" \
+ --dataset_name "libero_spatial_no_noops" \
+ --run_id_override "overfit_test_2000_steps_bs1" \
+ --batch_size 1 \
+ --grad_accumulation_steps 8 \
+ --learning_rate 5e-4 \
+ --use_lora True \
+ --lora_rank 16 \
+ --max_steps 2000 \
+ --save_freq 2000 \
+ --image_aug True \
+ --run_root_dir "/root/autodl-tmp/LOGS"
+2. 评估命令
+
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS/overfit_test_2000_steps_bs1--2000_chkpt \
+  --task_suite_name libero_spatial
+说明：评估前需修改 run_libero_eval.py 中 TARGET_TASK_ID = 6
+
+二、TaskB
+1. 训练命令
+bash
+运行
+WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/finetune.py \
+  --vla_path "/root/autodl-tmp/LOGS/overfit_test_2000_steps_bs1--2000_chkpt" \
+  --data_root_dir "/root/autodl-tmp/modified_libero_rlds" \
+  --dataset_name "libero_spatial_no_noops" \
+  --run_id_override "task_b_cl_10k_from_90" \
+  --batch_size 1 \
+  --grad_accumulation_steps 8 \
+  --learning_rate 5e-4 \
+  --use_lora True \
+  --lora_rank 16 \
+  --max_steps 4000 \
+  --save_freq 2000 \
+  --image_aug True \
+  --run_root_dir "/root/autodl-tmp/LOGS"
+2. 评估命令
+bash
+运行
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS/task_b_cl_10k_from_90--4000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False
+说明：评估前需修改 run_libero_eval.py 中 TARGET_TASK_ID = 0
+三、TaskC
+1. 训练命令
+bash
+运行
+WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/finetune.py \
+  --vla_path "/root/autodl-tmp/LOGS/task_b_cl_10k_from_90--2000_chkpt" \
+  --data_root_dir "/root/autodl-tmp/modified_libero_rlds" \
+  --dataset_name "libero_object_no_noops" \
+  --run_id_override "normal_lora_taskC_object" \
+  --batch_size 1 \
+  --grad_accumulation_steps 8 \
+  --learning_rate 5e-4 \
+  --use_lora True \
+  --lora_rank 16 \
+  --max_steps 32000 \
+  --save_freq 16000 \
+  --image_aug True \
+  --run_root_dir "/root/autodl-tmp/LOGS"
+2. 评估前置脚本（合并数据集配置）
+bash
+运行
+python -c "
+import json
+
+path_b = '/root/autodl-tmp/LOGS/task_b_cl_10k_from_90--2000_chkpt/dataset_statistics.json'
+
+try:
+    with open(path_b, 'r') as f: sb = json.load(f)
+    for step in ['16000', '32000']:
+        path_c = '/root/autodl-tmp/LOGS/normal_lora_taskC_object--' + step + '_chkpt/dataset_statistics.json'
+        try:
+            with open(path_c, 'r') as f: sc = json.load(f)
+            sc.update(sb)
+            with open(path_c, 'w') as f: json.dump(sc, f)
+            print('Successfully merged dict for step ' + step)
+        except Exception as e:
+            print('Failed on step ' + step + ': ' + str(e))
+except Exception as e:
+    print('Error loading path_b: ' + str(e))
+"
+3. 评估命令
+（1）评估 TaskC 自身
+bash
+运行
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS/normal_lora_taskC_object--4000_chkpt \
+  --task_suite_name libero_object \
+  --use_proprio False \
+  --num_images_in_input 1
+（2）评估 TaskA + TaskB
+bash
+运行
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS/normal_lora_taskC_object--4000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False
+四、TaskD
+1. 训练命令
+
+WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/finetune.py \
+  --vla_path "/root/autodl-tmp/LOGS/normal_lora_taskC_object--32000_chkpt" \
+  --data_root_dir "/root/autodl-tmp/modified_libero_rlds" \
+  --dataset_name "libero_goal_no_noops" \
+  --run_id_override "normal_lora_taskD_goal" \
+  --batch_size 1 \
+  --grad_accumulation_steps 8 \
+  --learning_rate 5e-4 \
+  --use_lora True \
+  --lora_rank 16 \
+  --max_steps 4000 \
+  --save_freq 2000 \
+  --image_aug True \
+  --run_root_dir "/root/autodl-tmp/LOGS"
+
+2. 评估前置脚本（合并数据集配置）
+
+python -c "
+import json
+
+path_b = '/root/autodl-tmp/LOGS/task_b_cl_10k_from_90--2000_chkpt/dataset_statistics.json'
+
+try:
+    with open(path_b, 'r') as f: sb = json.load(f)
+    for step in ['2000', '4000']:
+        path_d = '/root/autodl-tmp/LOGS/normal_lora_taskD_goal--' + step + '_chkpt/dataset_statistics.json'
+        try:
+            with open(path_d, 'r') as f: sd = json.load(f)
+            sd.update(sb)
+            with open(path_d, 'w') as f: json.dump(sd, f)
+            print('Successfully merged dict for step ' + step)
+        except Exception as e:
+            print('Failed on step ' + step + ': ' + str(e))
+except Exception as e:
+    print('Error loading path_b: ' + str(e))
+"
+3. 评估命令
+（1）评估 TaskD 自身
+bash
+运行
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS/normal_lora_taskD_goal--4000_chkpt \
+  --task_suite_name libero_goal \
+  --use_proprio False \
+  --num_images_in_input 1
+（2）评估 TaskC
+bash
+运行
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS/normal_lora_taskD_goal--4000_chkpt \
+  --task_suite_name libero_object \
+  --use_proprio False
+（3）评估 TaskA + TaskB
+bash
+运行
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS/normal_lora_taskD_goal--4000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False
+

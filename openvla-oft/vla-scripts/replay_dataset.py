@@ -21,7 +21,14 @@ class PrototypeReplayDataset(Dataset):
             for line in f:
                 record = json.loads(line.strip())
                 self.samples.append(record)
-                
+
+        if len(self.samples) == 0:
+            raise RuntimeError(
+                f"Manifest at {manifest_path} is empty. "
+                "The replay buffer may have been built with zero matching samples. "
+                "Check that the buffer build script's target_task_name matches the dataset."
+            )
+
         print(f"[Replay Dataset] Successfully loaded {len(self.samples)} prototype frames from {replay_dir}")
 
     def __len__(self):

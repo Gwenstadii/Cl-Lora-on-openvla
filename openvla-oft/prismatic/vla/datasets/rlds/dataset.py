@@ -240,7 +240,7 @@ def make_dataset_from_rlds(
     # ==================================================================================  
     # [环境验证] 将此项设为 None，关闭过滤，跑全量数据
     # ==================================================================================  
-    TARGET_TASK_INSTRUCTION = "turn on the stove" 
+    TARGET_TASK_INSTRUCTION = None 
 
     if TARGET_TASK_INSTRUCTION is not None:
         print(f"\n[SUCCESS] 匹配到任务: '{TARGET_TASK_INSTRUCTION}'\n")

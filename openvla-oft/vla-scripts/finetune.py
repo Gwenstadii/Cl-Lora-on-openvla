@@ -779,6 +779,7 @@ def finetune(cfg: FinetuneConfig) -> None:
     assert not (cfg.use_l1_regression and cfg.use_diffusion), (
         "Cannot do both L1 regression and diffusion. Please pick one of them!"
     )
+    assert cfg.max_steps > 0, f"max_steps must be > 0, got {cfg.max_steps}"
 
     # Trim trailing forward slash ('/') in VLA path if it exists
     cfg.vla_path = cfg.vla_path.rstrip("/")
@@ -1160,9 +1161,12 @@ def finetune(cfg: FinetuneConfig) -> None:
                 vla.train()
 
             # Stop training when max_steps is reached
-            if log_step == cfg.max_steps:
+            if log_step >= cfg.max_steps:
                 print(f"Max step {cfg.max_steps} reached! Stopping training...")
                 break
+
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
