@@ -727,7 +727,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     }
 
     # ---- Training loop ----
-    with tqdm.tqdm(total=cfg.max_steps, leave=False) as progress:
+    with tqdm.tqdm(total=cfg.max_steps, leave=True) as progress:
         vla.train()
         if action_head is not None:
             action_head.train()
@@ -823,6 +823,14 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                 scheduler.step()
                 optimizer.zero_grad()
                 progress.update()
+                # Live metrics on progress bar
+                smoothened = compute_smoothened_metrics(recent_metrics)
+                postfix = {"loss": f"{smoothened.get('loss_value', 0):.4f}"}
+                if cfg.use_kd:
+                    postfix["kd"] = f"{smoothened.get('loss_kd', 0):.4f}"
+                if cfg.use_replay:
+                    postfix["rep"] = f"{smoothened.get('loss_replay', 0):.4f}"
+                progress.set_postfix(postfix)
 
             # LR warmup
             if cfg.lr_warmup_steps > 0:

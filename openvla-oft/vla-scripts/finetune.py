@@ -1057,7 +1057,7 @@ def finetune(cfg: FinetuneConfig) -> None:
     }
 
     # Start training
-    with tqdm.tqdm(total=cfg.max_steps, leave=False) as progress:
+    with tqdm.tqdm(total=cfg.max_steps, leave=True) as progress:
         vla.train()
         optimizer.zero_grad()
         for batch_idx, batch in enumerate(dataloader):
@@ -1125,6 +1125,11 @@ def finetune(cfg: FinetuneConfig) -> None:
                 scheduler.step()
                 optimizer.zero_grad()
                 progress.update()
+                smoothened = compute_smoothened_metrics(recent_metrics)
+                progress.set_postfix({
+                    "loss": f"{smoothened.get('loss_value', 0):.4f}",
+                    "lr": f"{scheduler.get_last_lr()[0]:.2e}",
+                })
 
             # Save model checkpoint: either keep latest checkpoint only or all checkpoints
             if gradient_step_idx > 0 and log_step % cfg.save_freq == 0:
