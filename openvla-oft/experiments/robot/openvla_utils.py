@@ -297,12 +297,26 @@ def get_vla(cfg: Any) -> torch.nn.Module:
     if is_cl_lora and inject_cl_lora_into_model is not None:
         print(f"\n[*] Detected custom CL-LoRA adapter at {cl_lora_path}.")
         print("[*] Injecting CL-LoRA architecture...")
+        # 从 checkpoint 目录读取训练时的配置，如果没有则用默认值
+        cl_config_path = os.path.join(cfg.pretrained_checkpoint, "cl_lora_config.json")
+        if os.path.exists(cl_config_path):
+            import json
+            with open(cl_config_path, 'r') as f:
+                cl_cfg = json.load(f)
+            cl_rank = cl_cfg.get("lora_rank", 32)
+            cl_alpha = cl_cfg.get("alpha", min(cl_rank, 16))
+            cl_shared_ratio = cl_cfg.get("shared_split_ratio", 0.5)
+        else:
+            cl_rank = 32
+            cl_alpha = min(cl_rank, 16)
+            cl_shared_ratio = 0.5
+        print(f"[*] CL-LoRA config: rank={cl_rank}, alpha={cl_alpha}, shared_ratio={cl_shared_ratio}")
         vla = inject_cl_lora_into_model(
             vla,
-            rank=32,                # 👈 修改这里：从 16 改为 32
-            alpha=32.0,             # 👈 修改这里：从 16.0 改为 32.0
+            rank=cl_rank,
+            alpha=cl_alpha,
             dropout=0.0,
-            shared_split_ratio=0.5  # 必须和训练时保持一致
+            shared_split_ratio=cl_shared_ratio,
         )
         print("[*] Loading CL-LoRA weights...")
         cl_state_dict = torch.load(cl_lora_path, map_location="cpu")

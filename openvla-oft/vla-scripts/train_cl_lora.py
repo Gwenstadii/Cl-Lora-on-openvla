@@ -854,6 +854,20 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
 
                     processor.save_pretrained(checkpoint_dir)
 
+                    # Save CL-LoRA config (for eval alignment)
+                    import json as _json
+                    cl_config = {
+                        "lora_rank": cfg.lora_rank,
+                        "alpha": min(cfg.lora_rank, 16),
+                        "shared_split_ratio": max(1, cfg.shared_depth) / 32,
+                        "shared_depth": cfg.shared_depth,
+                        "orthogonal_init": cfg.orthogonal_init,
+                        "freeze_a": cfg.freeze_a,
+                        "use_block_scale": cfg.use_block_scale,
+                    }
+                    with open(checkpoint_dir / "cl_lora_config.json", "w") as _f:
+                        _json.dump(cl_config, _f)
+
                     # Save CL-LoRA adapter (trainable params only)
                     cl_lora_state = {k: v.cpu() for k, v in vla.module.state_dict().items() if any(x in k for x in ['lora_a', 'lora_b', 'block_scale'])}
                     torch.save(cl_lora_state, checkpoint_dir / "cl_lora_adapter.pt")
@@ -881,6 +895,19 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         final_dir = run_dir if cfg.save_latest_checkpoint_only else Path(str(run_dir) + f"--{cfg.max_steps}_chkpt")
         final_dir = Path(final_dir)
         final_dir.mkdir(parents=True, exist_ok=True)
+        # Save CL-LoRA config
+        import json as _json
+        cl_config = {
+            "lora_rank": cfg.lora_rank,
+            "alpha": min(cfg.lora_rank, 16),
+            "shared_split_ratio": max(1, cfg.shared_depth) / 32,
+            "shared_depth": cfg.shared_depth,
+            "orthogonal_init": cfg.orthogonal_init,
+            "freeze_a": cfg.freeze_a,
+            "use_block_scale": cfg.use_block_scale,
+        }
+        with open(final_dir / "cl_lora_config.json", "w") as _f:
+            _json.dump(cl_config, _f)
         processor.save_pretrained(final_dir)
         cl_lora_state = {k: v.cpu() for k, v in vla.module.state_dict().items() if any(x in k for x in ['lora_a', 'lora_b', 'block_scale'])}
         torch.save(cl_lora_state, final_dir / "cl_lora_adapter.pt")

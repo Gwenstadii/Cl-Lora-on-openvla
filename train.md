@@ -17,11 +17,134 @@
 
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
-export PYTHONPATH="/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/LIBERO:/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/:$PYTHONPATH"
+export PYTHONPATH="/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/LIBERO:/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft:$PYTHONPATH"
 export VLA_PATH="/root/autodl-tmp/models/openvla-7b"
 export DATA_ROOT="/root/autodl-tmp/modified_libero_rlds"
 export LOGS_ROOT="/root/autodl-tmp/LOGS-2"
-/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft
+
+# 每次运行前先进入项目目录
+cd /root/openvla-oft
+```
+
+***
+
+## 实验总流程
+
+提供两种执行策略，可根据实验习惯选择。
+
+### 策略 A：分支优先（推荐）
+
+一条分支从头跑到底（Task A→B→C→D），评估完毕后再启动下一条分支。优点是思维负担轻，中途出错只需回滚当前分支。
+
+```
+═══ 分支①：普通 LoRA + no replay ═════════════════════════════════════
+
+  A1  训练 Task A                           finetune.py
+  A2  评估 Task A                           修改 TARGET_TASK_ID
+  A3  训练 Task B（--vla_path 指向 A1 的 checkpoint）
+  A4  评估 Task A + Task B
+  A5  训练 Task C（--vla_path 指向 A3 的 checkpoint，切换数据集 libero_object）
+  A6  合并 dataset_statistics.json → 评估 Task A+B+C
+  A7  训练 Task D（--vla_path 指向 A5 的 checkpoint，切换数据集 libero_goal）
+  A8  合并 dataset_statistics.json → 评估 Task A+B+C+D  ← 分支①全部完成
+
+═══ 分支②：CL-LoRA + no replay ═══════════════════════════════════════
+
+  B1  训练 Task A                           train_cl_lora.py（--use_kd False --use_replay False）
+  B2  评估 Task A
+  B3  训练 Task B（--previous_checkpoint_dir 指向 B1，--use_kd False --use_replay False）
+  B4  评估 Task A + B
+  B5  训练 Task C（--previous_checkpoint_dir 指向 B3，切换数据集）
+  B6  合并 dataset_statistics.json → 评估 Task A+B+C
+  B7  训练 Task D（--previous_checkpoint_dir 指向 B5，切换数据集）
+  B8  合并 dataset_statistics.json → 评估 Task A+B+C+D  ← 分支②全部完成
+
+═══ 分支③：CL-LoRA + Prototype Replay ════════════════════════════════
+
+  C1  训练 Task A                           train_cl_lora.py（同分支② Stage 1）
+  C2  评估 Task A
+  C3  构建 Task A 原型回放缓冲                build_replay_buffer_openvla.py
+  C4  训练 Task B（--use_kd --use_replay --replay_buffer_dirs <taskA_proto>）
+  C5  评估 Task A + B
+  C6  构建 Task B 原型回放缓冲
+  C7  训练 Task C（--use_kd --use_replay --replay_buffer_dirs <taskA_proto> <taskB_proto>）
+  C8  合并 dataset_statistics.json → 评估 Task A+B+C
+  C9  构建 Task C 原型回放缓冲
+  C10 训练 Task D（--replay_buffer_dirs 三个 buffer）
+  C11 合并 dataset_statistics.json → 评估 Task A+B+C+D  ← 分支③全部完成
+
+═══ 分支④：CL-LoRA + Uniform Replay ══════════════════════════════════
+
+  D1~D11  同分支③，全部「原型回放」替换为「均匀回放」
+          构建缓冲用 build_uniform_replay_buffer.py
+          训练时 --replay_buffer_dirs 指向对应的 uniform buffer
+```
+
+> **核心规则（两条策略通用）：**
+>
+> - 分支① 的 `--vla_path` 始终指向前一阶段分支①自己的 checkpoint
+> - 分支②③④ 的 `--vla_path` 始终指向 base model（`$VLA_PATH`），用 `--previous_checkpoint_dir` 加载前一阶段 CL-LoRA 权重
+> - 分支③④ 从阶段二开始 `--teacher_checkpoint_dir` 指向前一阶段的 checkpoint（供 KD loss）
+
+### 策略 B：阶段优先（原流程）
+
+四个分支在同一阶段交替推进，每个阶段结束后统一评估。适合需要横向对比各分支在同阶段表现的场景。
+
+```
+═══ 阶段一 ═══
+  分支① Task A  →  分支② Task A  →  评估 Task A
+  构建 taskA replay buffers
+
+═══ 阶段二 ═══
+  分支① Task B  →  分支② Task B  →  分支③ Task B  →  分支④ Task B
+  评估全部（四个分支 × 两个任务）
+  构建 taskB replay buffers
+
+═══ 阶段三 ═══  (切换数据集 libero_object)
+  四个分支 Task C  →  评估全部（四个分支 × 三个任务）
+  构建 taskC replay buffers
+
+═══ 阶段四 ═══  (切换数据集 libero_goal)
+  四个分支 Task D  →  评估全部（四个分支 × 四个任务）
+```
+
+> 策略 B 的命令细节见下方各阶段章节。
+
+### 对比
+
+| <br />                   | 策略 A（分支优先）      | 策略 B（阶段优先） |
+| ------------------------ | --------------- | ---------- |
+| 已跑完的分支可立即写论文             | 需等全部完成才有完整矩阵    | <br />     |
+| 出错影响范围小（仅当前分支）           | 出错影响该阶段全部四个分支   | <br />     |
+| 分支③④需要中途构建 replay buffer | 也是中途构建，频率相同     | <br />     |
+| GPU 空闲零碎，一次跑一条线          | GPU 可在阶段内连续跑多条线 | <br />     |
+| **目前推荐**                 | 适合最终确认实验时交叉验证   | <br />     |
+
+***
+
+## 产生的文件树
+
+```
+LOGS-2/
+├── [分支①]  overfit_test_2000_steps_bs1--2000_chkpt/
+├── [分支①]  task_b_cl_10k_from_90--4000_chkpt/
+├── [分支①]  normal_lora_taskC_object--32000_chkpt/
+├── [分支①]  normal_lora_taskD_goal--4000_chkpt/
+├── [②③④共用] cl_lora_taskA_2k--2000_chkpt/
+├── [分支②]   cl_lora_taskB_no_replay--4000_chkpt/
+├── [分支③]   cl_lora_taskB_proto_replay--4000_chkpt/
+├── [分支④]   cl_lora_taskB_uniform_replay--4000_chkpt/
+├── [分支②]   cl_lora_taskC_no_replay--32000_chkpt/
+├── [分支③]   cl_lora_taskC_proto_replay--32000_chkpt/
+├── [分支④]   cl_lora_taskC_uniform_replay--32000_chkpt/
+├── [分支②]   cl_lora_taskD_no_replay--4000_chkpt/
+├── [分支③]   cl_lora_taskD_proto_replay--4000_chkpt/
+└── [分支④]   cl_lora_taskD_uniform_replay--4000_chkpt/
+
+replay_buffers/
+├── taskA_prototype/   taskA_uniform/
+├── taskB_prototype/   taskB_uniform/
+├── taskC_prototype/   taskC_uniform/
 ```
 
 ***
@@ -384,72 +507,280 @@ Task D 切换到 `libero_goal_no_noops`。模式同阶段三：
 
 ## 评估
 
-### 前置操作：修改 TARGET\_TASK\_ID
+### 评估原理
 
-评估前需修改 `experiments/robot/libero/run_libero_eval.py` 中的 `TARGET_TASK_ID` 变量：
+`run_libero_eval.py` 的核心逻辑：
 
-| 评估目标   | task\_suite\_name | TARGET\_TASK\_ID |
-| ------ | ----------------- | ---------------- |
-| Task A | `libero_spatial`  | 6（或对应的 task ID）  |
-| Task B | `libero_spatial`  | 0（或对应的 task ID）  |
-| Task C | `libero_object`   | 按实际 task 设定      |
-| Task D | `libero_goal`     | 按实际 task 设定      |
+1. 加载指定 checkpoint 的模型权重
+2. 遍历 `--task_suite_name` 对应 suite 下的所有任务
+3. 对每个任务，检测其任务名称是否包含 `TARGET_TASK_NAME`（硬编码在脚本第 484 行）
+4. 匹配成功后，执行 `--num_trials_per_task` 次 rollout，统计成功率
 
-> 不同 `task_suite_name` 之间的 task ID 含义不同。`TARGET_TASK_ID` 对应 suite 内的任务编号。
+**每次评估前必须改的参数：**
 
-### 跨数据集评估：合并 dataset\_statistics.json
+- `run_libero_eval.py` 第 484 行的 `TARGET_TASK_NAME`（指定评估哪个具体任务）
+- CLI 的 `--pretrained_checkpoint`（指定用哪个 checkpoint 评估）
+- CLI 的 `--task_suite_name`（指定在哪个 benchmark suite 里找任务）
 
-当在数据集 A 上训练、在数据集 B 上评估时（如 Task C 训练于 `libero_object` 但要评估 Task A/B 的 `libero_spatial`），需要合并 `dataset_statistics.json`，否则动作反归一化会出错。
+### 前置准备：获取任务名称
 
-```bash
-python -c "
-import json
-
-# 将 base 数据集的 statistics 合并进 target checkpoint
-path_base = '/root/autodl-tmp/LOGS/task_b_cl_10k_from_90--2000_chkpt/dataset_statistics.json'
-target_ckpt = '/root/autodl-tmp/LOGS/normal_lora_taskC_object--32000_chkpt'
-
-with open(path_base, 'r') as f:
-    base_stats = json.load(f)
-
-with open(target_ckpt + '/dataset_statistics.json', 'r') as f:
-    target_stats = json.load(f)
-
-target_stats.update(base_stats)
-
-with open(target_ckpt + '/dataset_statistics.json', 'w') as f:
-    json.dump(target_stats, f)
-
-print('Merged dataset_statistics.json for cross-dataset evaluation.')
-"
-```
-
-> 原理：评估时动作反归一化依赖 `dataset_statistics.json` 中的 `action_mean` / `action_std`。当 checkpoint 是在 `libero_object` 上训练的，其 statistics 不包含 `libero_spatial` 的动作分布信息，需要从其他 checkpoint 中补充。
-
-### 评估命令
+评估的第一步是知道你要评测的任务在 LIBERO 里的确切名称。可以用这个命令列出 suite 的所有任务：
 
 ```bash
 cd /root/openvla-oft
 
-# 评估单一任务
-python experiments/robot/libero/run_libero_eval.py \
-  --pretrained_checkpoint /root/autodl-tmp/LOGS/overfit_test_2000_steps_bs1--2000_chkpt \
-  --task_suite_name libero_spatial
+python -c "
+from libero.libero import benchmark
+benchmark_dict = benchmark.get_benchmark_dict()
+task_suite = benchmark_dict['libero_spatial']()
+for i in range(task_suite.n_tasks):
+    print(f'ID {i}: {task_suite.get_task(i).name}')
+"
 
-# 跨数据集评估（确保已合并 dataset_statistics.json）
-python experiments/robot/libero/run_libero_eval.py \
-  --pretrained_checkpoint /root/autodl-tmp/LOGS/normal_lora_taskC_object--32000_chkpt \
-  --task_suite_name libero_spatial \
-  --use_proprio False
 
-# CL-LoRA checkpoint 评估
-python experiments/robot/libero/run_libero_eval.py \
-  --pretrained_checkpoint /root/autodl-tmp/LOGS/cl_lora_taskB_proto_replay--4000_chkpt \
-  --task_suite_name libero_spatial \
-  --use_proprio False
+[info] using task orders [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+ID 0: pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate
+ID 1: pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate
+ID 2: pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate
+ID 3: pick_up_the_black_bowl_on_the_cookie_box_and_place_it_on_the_plate
+ID 4: pick_up_the_black_bowl_in_the_top_drawer_of_the_wooden_cabinet_and_place_it_on_the_plate
+ID 5: pick_up_the_black_bowl_on_the_ramekin_and_place_it_on_the_plate
+ID 6: pick_up_the_black_bowl_next_to_the_cookie_box_and_place_it_on_the_plate
+ID 7: pick_up_the_black_bowl_on_the_stove_and_place_it_on_the_plate
+ID 8: pick_up_the_black_bowl_next_to_the_plate_and_place_it_on_the_plate
+ID 9: pick_up_the_black_bowl_on_the_wooden_cabinet_and_place_it_on_the_plate
 ```
 
-> 对于 CL-LoRA 训练的 checkpoint，`run_libero_eval.py` 中需要加载 `cl_lora_adapter.pt`。如果评估脚本尚未支持 CL-LoRA 权重加载，需要在 `experiments/robot/openvla_utils.py` 的模型加载逻辑中添加对应路径。
+将 `libero_spatial` 替换为 `libero_object`、`libero_goal` 查看其他 suite 的任务列表。记下你要评测的任务名称（完整字符串）。
+
+***
+
+### 策略 A 评估：分支① 普通 LoRA
+
+分支① 的所有 checkpoint 都是标准 PEFT LoRA 格式，评估脚本可直接加载。
+
+#### A2 — 评估 Task A（训练完 Task A 之后）
+
+```bash
+cd /root/openvla-oft
+
+# ⚠️ 前置：修改 run_libero_eval.py 第 484 行
+#     TARGET_TASK_NAME = "你的 Task A 任务名称"
+#     例如: "pick up the black bowl next to the cookie box and place it on the plate"
+
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS-2/overfit_test_2000_steps_bs1--2000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False \
+  --num_images_in_input 1 \
+  --lora_rank 16
+```
+
+| 参数                        | 含义                       | 为什么设这个值                       |
+| ------------------------- | ------------------------ | ----------------------------- |
+| `--pretrained_checkpoint` | 要评估的 checkpoint 目录       | 分支① Task A 训练的输出目录            |
+| `--task_suite_name`       | 在哪个 benchmark suite 里找任务 | Task A 来自 `libero_spatial`    |
+| `--use_proprio False`     | 不使用 proprio 输入           | 训练时没开 proprio，评估也必须关          |
+| `--num_images_in_input 1` | 只用一张第三视角图像               | 训练时没开 wrist camera，保持一致       |
+| `--lora_rank 16`          | LoRA 秩                   | 必须等于训练时的 `lora_rank`（分支①用 16） |
+
+#### A4 — 评估 Task A + Task B（训练完 Task B 之后）
+
+Task B 的 checkpoint 包含 Task A 的 LoRA adapter（因为是从 Task A 的 checkpoint 继续训练的），评估时只需评估这个最新 checkpoint。
+
+```bash
+# ⚠️ 前置：修改 TARGET_TASK_NAME = "你的 Task A 任务名称"
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS-2/task_b_cl_10k_from_90--4000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False \
+  --num_images_in_input 1 \
+  --lora_rank 16
+
+# ⚠️ 前置：修改 TARGET_TASK_NAME = "你的 Task B 任务名称"
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS-2/task_b_cl_10k_from_90--4000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False \
+  --num_images_in_input 1 \
+  --lora_rank 16
+```
+
+> **同一条命令跑两次，唯一区别是改** **`TARGET_TASK_NAME`**——第一次评 Task A，第二次评 Task B。
+
+#### A6 — 评估 Task A + B + C（训练完 Task C 之后，跨数据集）
+
+**这一步需要额外操作**，因为 Task C 是在 `libero_object` 上训练的，而 Task A/B 在 `libero_spatial` 上。checkpoint 里的 `dataset_statistics.json` 只包含 `libero_object` 的动作分布。
+
+**Step 1：合并 dataset\_statistics.json**
+
+```bash
+python -c "
+import json, shutil
+
+ckpt = '/root/autodl-tmp/LOGS-2/normal_lora_taskC_object--32000_chkpt'
+stats_spatial = '/root/autodl-tmp/LOGS-2/task_b_cl_10k_from_90--4000_chkpt/dataset_statistics.json'
+
+# 备份原始文件
+shutil.copy(ckpt + '/dataset_statistics.json', ckpt + '/dataset_statistics.json.bak')
+
+with open(stats_spatial, 'r') as f:
+    spatial = json.load(f)
+with open(ckpt + '/dataset_statistics.json', 'r') as f:
+    obj = json.load(f)
+
+obj.update(spatial)  # 把 libero_spatial 的统计信息合并进去
+
+with open(ckpt + '/dataset_statistics.json', 'w') as f:
+    json.dump(obj, f)
+
+print('Done. libero_object + libero_spatial statistics merged.')
+"
+```
+
+| 变量              | 含义                                                                 |
+| --------------- | ------------------------------------------------------------------ |
+| `ckpt`          | Task C 的 checkpoint 路径（需要补充 libero\_spatial 的统计信息）                 |
+| `stats_spatial` | 一个在 `libero_spatial` 上训练过的 checkpoint 中的 `dataset_statistics.json` |
+
+**原理：** 评估时动作反归一化靠 `dataset_statistics.json` 里的 `action_mean` / `action_std`。每个数据集（spatial/object/goal）的统计量不同。当用某数据集训练出来的 checkpoint 评估另一数据集的任务时，必须把目标数据集的统计信息合并进去。
+
+**Step 2：执行评估**
+
+```bash
+# ⚠️ 每次改 TARGET_TASK_NAME
+
+# 评估 Task A（libero_spatial）
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS-2/normal_lora_taskC_object--32000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False --num_images_in_input 1 --lora_rank 16
+
+# 评估 Task B（libero_spatial）
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS-2/normal_lora_taskC_object--32000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False --num_images_in_input 1 --lora_rank 16
+
+# 评估 Task C 自身（libero_object，不需要合并 statistics）
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS-2/normal_lora_taskC_object--32000_chkpt \
+  --task_suite_name libero_object \
+  --use_proprio False --num_images_in_input 1 --lora_rank 16
+```
+
+#### A8 — 评估 Task A + B + C + D（训练完 Task D 之后，跨数据集）
+
+与 A6 相同模式：Task D 是在 `libero_goal` 上训练的，评估 Task A/B 和 Task C 都需要合并 statistics。
+
+```bash
+# Step 1: 合并（需要 spatial + object 的 statistics）
+python -c "
+import json, shutil
+
+ckpt = '/root/autodl-tmp/LOGS-2/normal_lora_taskD_goal--4000_chkpt'
+stats_spatial = '/root/autodl-tmp/LOGS-2/task_b_cl_10k_from_90--4000_chkpt/dataset_statistics.json'
+stats_object  = '/root/autodl-tmp/LOGS-2/normal_lora_taskC_object--32000_chkpt/dataset_statistics.json.bak'
+
+shutil.copy(ckpt + '/dataset_statistics.json', ckpt + '/dataset_statistics.json.bak')
+
+with open(stats_spatial) as f: s = json.load(f)
+with open(stats_object) as f: o = json.load(f)
+with open(ckpt + '/dataset_statistics.json') as f: d = json.load(f)
+
+d.update(s); d.update(o)
+
+with open(ckpt + '/dataset_statistics.json', 'w') as f:
+    json.dump(d, f)
+print('Done.')
+"
+
+# Step 2: 四次评估（每次改 TARGET_TASK_NAME）
+# Task A: --task_suite_name libero_spatial
+# Task B: --task_suite_name libero_spatial
+# Task C: --task_suite_name libero_object
+# Task D: --task_suite_name libero_goal（自身数据集，不需要合并但已合并也无害）
+```
+
+***
+
+### 策略 A 评估：分支② CL-LoRA + no replay
+
+**关键差异：** CL-LoRA checkpoint 不含 PEFT adapter，而是用 `cl_lora_adapter.pt` 存储权重。评估脚本中 `get_model()` 函数需要能够加载 CL-LoRA 格式的权重。
+
+当前 `experiments/robot/openvla_utils.py` 的 `get_model()` 使用 PEFT 的 `from_pretrained()` 加载 adapter。对于 CL-LoRA checkpoint，需要在评估前**临时修补**模型加载逻辑：
+
+确认 `experiments/robot/openvla_utils.py` 中的 `get_model()` 是否已支持 CL-LoRA。如果未支持（报错找不到 adapter\_model.bin），临时方案是用 `finetune.py` 以 `--use_lora` 模式加载同一个 checkpoint（但会产生一份新的 LoRA adapter），或者直接在 eval 前手动注入 CL-LoRA 并加载 cl\_lora\_adapter.pt。
+
+**评估命令与分支①完全相同，只换 checkpoint 路径和** **`--lora_rank 32`：**
+
+```bash
+# B2 — 评估 Task A
+#     checkpoint: /root/autodl-tmp/LOGS-2/cl_lora_taskA_2k--2000_chkpt
+#     --task_suite_name libero_spatial  --lora_rank 32
+
+# B4 — 评估 Task A + B
+#     checkpoint: /root/autodl-tmp/LOGS-2/cl_lora_taskB_no_replay--4000_chkpt
+#     --task_suite_name libero_spatial  --lora_rank 32
+#     (跑两次，分别改 TARGET_TASK_NAME)
+
+# B6 — 评估 Task A + B + C（需要合并 statistics，同分支① A6 模式）
+#     checkpoint: /root/autodl-tmp/LOGS-2/cl_lora_taskC_no_replay--32000_chkpt
+#     --lora_rank 32
+
+# B8 — 评估 Task A + B + C + D（需要合并 statistics，同分支① A8 模式）
+#     checkpoint: /root/autodl-tmp/LOGS-2/cl_lora_taskD_no_replay--4000_chkpt
+#     --lora_rank 32
+```
+
+***
+
+### 策略 A 评估：分支③④ CL-LoRA + Replay
+
+**与分支②完全相同**，只换对应的 checkpoint 路径：
+
+| 步骤              | 分支③ checkpoint                            | 分支④ checkpoint                              |
+| --------------- | ----------------------------------------- | ------------------------------------------- |
+| 评估 Task A       | `cl_lora_taskA_2k--2000_chkpt`            | （共用分支②的 Task A checkpoint）                  |
+| 评估 Task A+B     | `cl_lora_taskB_proto_replay--4000_chkpt`  | `cl_lora_taskB_uniform_replay--4000_chkpt`  |
+| 评估 Task A+B+C   | `cl_lora_taskC_proto_replay--32000_chkpt` | `cl_lora_taskC_uniform_replay--32000_chkpt` |
+| 评估 Task A+B+C+D | `cl_lora_taskD_proto_replay--4000_chkpt`  | `cl_lora_taskD_uniform_replay--4000_chkpt`  |
+
+参数设置完全一致：`--lora_rank 32 --use_proprio False --num_images_in_input 1`，跨数据集时合并 statistics。
+
+***
+
+### 评估参数速查
+
+| 参数                      | 分支①       | 分支②③④    | 说明                      |
+| ----------------------- | --------- | -------- | ----------------------- |
+| `--lora_rank`           | 16        | 32       | 必须等于训练时使用的秩             |
+| `--use_proprio`         | False     | False    | 当前训练都没开 proprio         |
+| `--num_images_in_input` | 1         | 1        | 单相机（无 wrist camera）     |
+| `--use_l1_regression`   | True（默认）  | True（默认） | 用的是 L1 回归动作头            |
+| `--num_trials_per_task` | 50（默认）    | 50（默认）   | 每个任务测 50 次，算成功率         |
+| `--task_suite_name`     | 取决于评估哪个任务 | 同左       | spatial / object / goal |
+
+### 成功率计算
+
+每次评估的输出示例：
+
+```
+[INFO] 正在执行精准评估任务: pick_up_the_black_bowl... (ID: 6)
+[INFO] Trials: 50 | Successes: 45 | Success Rate: 90.00%
+```
+
+**记录格式（性能矩阵）：**
+
+```
+                Task A    Task B    Task C    Task D
+分支① Stage 1    0.90       -         -         -
+分支① Stage 2    0.XX     0.XX        -         -
+分支① Stage 3    0.XX     0.XX      0.XX        -
+分支① Stage 4    0.XX     0.XX      0.XX      0.XX
+```
+
+每一行就是上面 A2/A4/A6/A8 评估步骤得到的四个成功率。
 
 ***
 
