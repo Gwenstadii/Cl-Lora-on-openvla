@@ -308,7 +308,7 @@ def get_vla(cfg: Any) -> torch.nn.Module:
             cl_shared_ratio = cl_cfg.get("shared_split_ratio", 0.5)
         else:
             cl_rank = 32
-            cl_alpha = min(cl_rank, 16)
+            cl_alpha = cl_rank
             cl_shared_ratio = 0.5
         print(f"[*] CL-LoRA config: rank={cl_rank}, alpha={cl_alpha}, shared_ratio={cl_shared_ratio}")
         vla = inject_cl_lora_into_model(

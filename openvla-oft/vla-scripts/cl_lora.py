@@ -86,6 +86,14 @@ class CLLoRALinear(nn.Module):
         return result + lora_out * scale
 
 
+def _is_llama_decoder_parent(name: str, llama_layer_names: set) -> bool:
+    """Check if a module name belongs to a LlamaDecoderLayer subtree."""
+    for ll_name in llama_layer_names:
+        if name == ll_name or name.startswith(ll_name + "."):
+            return True
+    return False
+
+
 def inject_cl_lora_into_model(
     model,
     rank: int = 16,
@@ -96,66 +104,102 @@ def inject_cl_lora_into_model(
     freeze_a: bool = True,
     use_block_scale: bool = True,
 ):
-    """Traverse LlamaDecoderLayers and replace attention/FFN linear layers with CLLoRALinear.
+    """Replace ALL nn.Linear layers with CLLoRALinear (matching PEFT all-linear scope).
 
-    Args:
-        model: OpenVLAForActionPrediction model (HuggingFace format).
-        rank: LoRA rank.
-        alpha: LoRA alpha scaling.
-        dropout: LoRA dropout rate.
-        shared_split_ratio: Fraction of layers designated as shared (0.0 to 1.0).
-        orthogonal_init: Orthogonal init LoRA-A in shared layers.
-        freeze_a: Freeze LoRA-A in shared layers.
-        use_block_scale: Add learnable block_scale gates in specific layers.
+    For layers inside LlamaDecoderLayer: apply shared/specific depth-based split.
+    For all other Linear layers (projectors, lm_head, etc.): treat as SPECIFIC (fully trainable).
 
-    Returns:
-        model with injected CLLoRALinear layers.
+    This ensures CL-LoRA covers the same set of layers as PEFT's ``target_modules="all-linear"``,
+    making standard-LoRA and CL-LoRA directly comparable under the control-variable principle.
     """
-    llama_layers = []
+    # ---- Phase 1: discover LlamaDecoderLayer depth ----
+    llama_layer_names = set()
     for name, module in model.named_modules():
         if module.__class__.__name__ == "LlamaDecoderLayer":
-            llama_layers.append((name, module))
+            llama_layer_names.add(name)
 
-    total_depth = len(llama_layers)
-    if total_depth == 0:
-        raise RuntimeError("No LlamaDecoderLayer found in model. Check model architecture.")
-    shared_depth = max(1, int(total_depth * shared_split_ratio))
+    total_llama_depth = len(llama_layer_names)
+    if total_llama_depth == 0:
+        raise RuntimeError("No LlamaDecoderLayer found in model.")
+    shared_depth_count = max(1, int(total_llama_depth * shared_split_ratio))
 
-    print(f"\n--- Injecting CL-LoRA ---")
-    print(f"Total Depth: {total_depth}")
-    print(f"Shared Layers (Frozen A):    0 to {shared_depth - 1}")
-    print(f"Specific Layers (Learnable):  {shared_depth} to {total_depth - 1}\n")
+    # Build ordering: sort decoder layer names by their numeric index
+    llama_ordered = []
+    for name in llama_layer_names:
+        # name is like "language_model.model.layers.0" or "model.layers.0"
+        idx = None
+        parts = name.split(".")
+        for p in parts:
+            try:
+                idx = int(p)
+                break
+            except ValueError:
+                continue
+        llama_ordered.append((idx if idx is not None else 9999, name))
+    llama_ordered.sort(key=lambda x: x[0])
+    depth_rank = {name: i for i, (_, name) in enumerate(llama_ordered)}
 
-    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                      "gate_proj", "up_proj", "down_proj"]
-    replaced_count = 0
+    # ---- Phase 2: replace EVERY nn.Linear in the model ----
+    print(f"\n--- Injecting CL-LoRA (all-linear scope) ---")
+    print(f"LlamaDecoderLayer depth: {total_llama_depth}")
+    print(f"Shared layers (frozen A):  ranks 0 to {shared_depth_count - 1}")
+    print(f"Specific layers             ranks {shared_depth_count} to {total_llama_depth - 1}")
+    print(f"Non-decoder Linear layers:  ALL treated as specific\n")
 
-    for layer_idx, (layer_name, layer_module) in enumerate(llama_layers):
-        is_shared = layer_idx < shared_depth
+    replaced_llama = 0
+    replaced_other = 0
 
-        for name, module in layer_module.named_modules():
-            if any(name.endswith(t) for t in target_modules) and isinstance(module, nn.Linear):
-                parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
-                child_name = name.rsplit('.', 1)[-1]
+    # We must walk the module tree and replace leaves in-place.
+    # named_modules() gives full paths; we replace via parent.setattr.
+    module_list = list(model.named_modules())
 
-                parent_module = layer_module
-                if parent_name:
-                    for part in parent_name.split('.'):
-                        parent_module = getattr(parent_module, part)
+    for full_name, module in module_list:
+        if not isinstance(module, nn.Linear):
+            continue
+        # Skip layers already replaced (CLLoRALinear wraps the original Linear)
+        if isinstance(module, CLLoRALinear):
+            continue
 
-                cl_lora_layer = CLLoRALinear(
-                    base_layer=module,
-                    rank=rank,
-                    alpha=alpha,
-                    dropout=dropout,
-                    is_shared=is_shared,
-                    orthogonal_init=orthogonal_init,
-                    freeze_a=freeze_a,
-                    use_block_scale=use_block_scale,
-                ).to(module.weight.device).to(module.weight.dtype)
+        # Determine whether this Linear lives inside a LlamaDecoderLayer
+        is_in_llama = _is_llama_decoder_parent(full_name, llama_layer_names)
 
-                setattr(parent_module, child_name, cl_lora_layer)
-                replaced_count += 1
+        if is_in_llama:
+            # Find which LlamaDecoderLayer this belongs to
+            parent_llama_name = full_name
+            while parent_llama_name not in llama_layer_names and "." in parent_llama_name:
+                parent_llama_name = parent_llama_name.rsplit(".", 1)[0]
+            layer_rank = depth_rank.get(parent_llama_name, total_llama_depth)
+            is_shared = layer_rank < shared_depth_count
+            replaced_llama += 1
+        else:
+            is_shared = False  # non-decoder layers always specific (no depth concept)
+            replaced_other += 1
 
-    print(f"Replaced {replaced_count} Linear layers with CLLoRALinear.\n")
+        # Locate parent to do the replacement
+        if "." in full_name:
+            parent_name, child_name = full_name.rsplit(".", 1)
+        else:
+            parent_name, child_name = "", full_name
+
+        parent_module = model
+        if parent_name:
+            for part in parent_name.split("."):
+                parent_module = getattr(parent_module, part)
+
+        cl_lora_layer = CLLoRALinear(
+            base_layer=module,
+            rank=rank,
+            alpha=alpha,
+            dropout=dropout,
+            is_shared=is_shared,
+            orthogonal_init=orthogonal_init,
+            freeze_a=freeze_a,
+            use_block_scale=use_block_scale,
+        ).to(module.weight.device).to(module.weight.dtype)
+
+        setattr(parent_module, child_name, cl_lora_layer)
+
+    print(f"Replaced {replaced_llama} LlamaDecoderLayer Linear layers + "
+          f"{replaced_other} other Linear layers with CLLoRALinear.")
+    print(f"Total: {replaced_llama + replaced_other} layers\n")
     return model

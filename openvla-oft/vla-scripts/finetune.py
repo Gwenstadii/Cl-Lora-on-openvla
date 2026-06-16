@@ -860,7 +860,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             vla = inject_cl_lora_into_model(
                 vla,
                 rank=cfg.lora_rank,
-                alpha=min(cfg.lora_rank, 16),
+                alpha=cfg.lora_rank,
                 dropout=cfg.lora_dropout,
                 shared_split_ratio=shared_split_ratio,
                 orthogonal_init=cfg.orthogonal_init,
@@ -871,7 +871,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         else:
             lora_config = LoraConfig(
                 r=cfg.lora_rank,
-                lora_alpha=min(cfg.lora_rank, 16),
+                lora_alpha=cfg.lora_rank,
                 lora_dropout=cfg.lora_dropout,
                 target_modules="all-linear",
                 init_lora_weights="gaussian",

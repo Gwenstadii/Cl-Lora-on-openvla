@@ -858,7 +858,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                     import json as _json
                     cl_config = {
                         "lora_rank": cfg.lora_rank,
-                        "alpha": min(cfg.lora_rank, 16),
+                        "alpha": cfg.lora_rank,
                         "shared_split_ratio": max(1, cfg.shared_depth) / 32,
                         "shared_depth": cfg.shared_depth,
                         "orthogonal_init": cfg.orthogonal_init,
@@ -899,7 +899,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         import json as _json
         cl_config = {
             "lora_rank": cfg.lora_rank,
-            "alpha": min(cfg.lora_rank, 16),
+            "alpha": cfg.lora_rank,
             "shared_split_ratio": max(1, cfg.shared_depth) / 32,
             "shared_depth": cfg.shared_depth,
             "orthogonal_init": cfg.orthogonal_init,

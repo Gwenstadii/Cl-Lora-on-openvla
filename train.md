@@ -22,6 +22,9 @@ export VLA_PATH="/root/autodl-tmp/models/openvla-7b"
 export DATA_ROOT="/root/autodl-tmp/modified_libero_rlds"
 export LOGS_ROOT="/root/autodl-tmp/LOGS-2"
 
+echo $PYTHONPATH
+echo $LOGS_ROOT
+
 # 每次运行前先进入项目目录
 cd /root/openvla-oft
 ```
@@ -201,8 +204,8 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl
   --grad_accumulation_steps 8 \
   --learning_rate 5e-4 \
   --use_cl_lora True \
-  --lora_rank 32 \
-  --shared_depth 16 \
+  --lora_rank 16 \
+  --shared_depth 8 \
   --orthogonal_init True \
   --freeze_a True \
   --use_block_scale True \
@@ -210,12 +213,24 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl
   --use_replay False \
   --stage 1 \
   --max_steps 2000 \
-  --save_freq 2000 \
+  --save_freq 1000 \
   --image_aug True \
   --run_root_dir $LOGS_ROOT
 ```
 
-> 分支③④ 的阶段一与此完全相同（都是用 `train_cl_lora.py --use_kd False --use_replay False`），共用同一个 checkpoint。
+| 参数 | 值 | 与分支①对比 |
+|---|---|---|
+| `--lora_rank` | 16 | **相同**（控制变量：rank 必须一致） |
+| `--shared_depth` | 8 | 分支①无此概念，CL-LoRA 特有的浅层共享 |
+| `--orthogonal_init` | True | CL-LoRA 特有：共享层 A 矩阵正交初始化 |
+| `--freeze_a` | True | CL-LoRA 特有：共享层 A 冻结，保护旧知识 |
+| `--use_block_scale` | True | CL-LoRA 特有：特定层可学习门控系数 |
+| `--save_freq` | 1000 | 每千步存一次，支持断点续训 |
+| 其余参数 | 同分支① | 学习率、batch、aug 等完全一致 |
+
+Checkpoint 输出路径: `$LOGS_ROOT/cl_lora_taskA_2k--2000_chkpt/`
+
+> 训练完成后需要补 `dataset_statistics.json` 的 key（评估时需要），参见[评估准备](#评估前准备)。分支③④ 的阶段一与此完全相同（`--use_kd False --use_replay False`），共用同一个 checkpoint。
 
 ***
 
@@ -298,23 +313,13 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl
   --data_root_dir $DATA_ROOT \
   --dataset_name "libero_spatial_no_noops" \
   --run_id_override "cl_lora_taskB_no_replay" \
-  --batch_size 1 \
-  --grad_accumulation_steps 8 \
-  --learning_rate 5e-4 \
-  --use_cl_lora True \
-  --lora_rank 32 \
-  --shared_depth 16 \
-  --orthogonal_init True \
-  --freeze_a True \
-  --use_block_scale True \
-  --use_kd False \
-  --use_replay False \
+  --batch_size 1 --grad_accumulation_steps 8 --learning_rate 5e-4 \
+  --use_cl_lora True --lora_rank 16 \
+  --shared_depth 8 --orthogonal_init True --freeze_a True --use_block_scale True \
+  --use_kd False --use_replay False \
   --stage 2 \
-  --previous_checkpoint_dir $TASK_A_CL_CKPT \
-  --previous_checkpoint_step 2000 \
-  --max_steps 4000 \
-  --save_freq 2000 \
-  --image_aug True \
+  --previous_checkpoint_dir $TASK_A_CL_CKPT --previous_checkpoint_step 2000 \
+  --max_steps 4000 --save_freq 1000 --image_aug True \
   --run_root_dir $LOGS_ROOT
 ```
 
@@ -331,26 +336,15 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl
   --batch_size 1 \
   --grad_accumulation_steps 8 \
   --learning_rate 5e-4 \
-  --use_cl_lora True \
-  --lora_rank 32 \
-  --shared_depth 16 \
-  --orthogonal_init True \
-  --freeze_a True \
-  --use_block_scale True \
-  --use_kd True \
-  --lambda_kd 1.0 \
-  --teacher_checkpoint_dir $TASK_A_CL_CKPT \
-  --teacher_checkpoint_step 2000 \
-  --use_replay True \
-  --replay_buffer_dirs $PROTO_BUFFER \
-  --replay_loss_weight 1.0 \
-  --replay_every_n_steps 1 \
+  --use_cl_lora True --lora_rank 16 \
+  --shared_depth 8 --orthogonal_init True --freeze_a True --use_block_scale True \
+  --use_kd True --lambda_kd 1.0 \
+  --teacher_checkpoint_dir $TASK_A_CL_CKPT --teacher_checkpoint_step 2000 \
+  --use_replay True --replay_buffer_dirs $PROTO_BUFFER \
+  --replay_loss_weight 1.0 --replay_every_n_steps 1 \
   --stage 2 \
-  --previous_checkpoint_dir $TASK_A_CL_CKPT \
-  --previous_checkpoint_step 2000 \
-  --max_steps 4000 \
-  --save_freq 2000 \
-  --image_aug True \
+  --previous_checkpoint_dir $TASK_A_CL_CKPT --previous_checkpoint_step 2000 \
+  --max_steps 4000 --save_freq 1000 --image_aug True \
   --run_root_dir $LOGS_ROOT
 ```
 
@@ -361,33 +355,19 @@ UNIFORM_BUFFER="/root/autodl-tmp/replay_buffers/taskA_uniform"
 
 # 参数同分支③，仅 --replay_buffer_dirs 换为均匀回放缓冲
 WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl_lora.py \
-  --vla_path $VLA_PATH \
-  --data_root_dir $DATA_ROOT \
+  --vla_path $VLA_PATH --data_root_dir $DATA_ROOT \
   --dataset_name "libero_spatial_no_noops" \
   --run_id_override "cl_lora_taskB_uniform_replay" \
-  --batch_size 1 \
-  --grad_accumulation_steps 8 \
-  --learning_rate 5e-4 \
-  --use_cl_lora True \
-  --lora_rank 32 \
-  --shared_depth 16 \
-  --orthogonal_init True \
-  --freeze_a True \
-  --use_block_scale True \
-  --use_kd True \
-  --lambda_kd 1.0 \
-  --teacher_checkpoint_dir $TASK_A_CL_CKPT \
-  --teacher_checkpoint_step 2000 \
-  --use_replay True \
-  --replay_buffer_dirs $UNIFORM_BUFFER \
-  --replay_loss_weight 1.0 \
-  --replay_every_n_steps 1 \
+  --batch_size 1 --grad_accumulation_steps 8 --learning_rate 5e-4 \
+  --use_cl_lora True --lora_rank 16 \
+  --shared_depth 8 --orthogonal_init True --freeze_a True --use_block_scale True \
+  --use_kd True --lambda_kd 1.0 \
+  --teacher_checkpoint_dir $TASK_A_CL_CKPT --teacher_checkpoint_step 2000 \
+  --use_replay True --replay_buffer_dirs $UNIFORM_BUFFER \
+  --replay_loss_weight 1.0 --replay_every_n_steps 1 \
   --stage 2 \
-  --previous_checkpoint_dir $TASK_A_CL_CKPT \
-  --previous_checkpoint_step 2000 \
-  --max_steps 4000 \
-  --save_freq 2000 \
-  --image_aug True \
+  --previous_checkpoint_dir $TASK_A_CL_CKPT --previous_checkpoint_step 2000 \
+  --max_steps 4000 --save_freq 1000 --image_aug True \
   --run_root_dir $LOGS_ROOT
 ```
 
@@ -424,27 +404,16 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/finetune
 TASK_B_CL_CKPT="$LOGS_ROOT/cl_lora_taskB_no_replay--4000_chkpt"
 
 WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl_lora.py \
-  --vla_path $VLA_PATH \
-  --data_root_dir $DATA_ROOT \
+  --vla_path $VLA_PATH --data_root_dir $DATA_ROOT \
   --dataset_name "libero_object_no_noops" \
   --run_id_override "cl_lora_taskC_no_replay" \
-  --batch_size 1 \
-  --grad_accumulation_steps 8 \
-  --learning_rate 5e-4 \
-  --use_cl_lora True \
-  --lora_rank 32 \
-  --shared_depth 16 \
-  --orthogonal_init True \
-  --freeze_a True \
-  --use_block_scale True \
-  --use_kd False \
-  --use_replay False \
+  --batch_size 1 --grad_accumulation_steps 8 --learning_rate 5e-4 \
+  --use_cl_lora True --lora_rank 16 \
+  --shared_depth 8 --orthogonal_init True --freeze_a True --use_block_scale True \
+  --use_kd False --use_replay False \
   --stage 3 \
-  --previous_checkpoint_dir $TASK_B_CL_CKPT \
-  --previous_checkpoint_step 4000 \
-  --max_steps 32000 \
-  --save_freq 16000 \
-  --image_aug True \
+  --previous_checkpoint_dir $TASK_B_CL_CKPT --previous_checkpoint_step 4000 \
+  --max_steps 32000 --save_freq 8000 --image_aug True \
   --run_root_dir $LOGS_ROOT
 ```
 
@@ -468,8 +437,8 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl
   --grad_accumulation_steps 8 \
   --learning_rate 5e-4 \
   --use_cl_lora True \
-  --lora_rank 32 \
-  --shared_depth 16 \
+  --lora_rank 16 \
+  --shared_depth 8 \
   --orthogonal_init True \
   --freeze_a True \
   --use_block_scale True \
@@ -574,6 +543,14 @@ python experiments/robot/libero/run_libero_eval.py \
   --use_proprio False \
   --num_images_in_input 1 \
   --lora_rank 16
+
+python experiments/robot/libero/run_libero_eval.py \
+    --pretrained_checkpoint /root/autodl-tmp/LOGS-2/cl_lora_taskA_2k--2000_chkpt \
+    --task_suite_name libero_spatial \
+    --use_proprio False \
+    --num_images_in_input 1 \
+    --lora_rank 16 \
+    --use_l1_regression True
 ```
 
 | 参数                        | 含义                       | 为什么设这个值                       |
@@ -706,55 +683,285 @@ print('Done.')
 
 ### 策略 A 评估：分支② CL-LoRA + no replay
 
-**关键差异：** CL-LoRA checkpoint 不含 PEFT adapter，而是用 `cl_lora_adapter.pt` 存储权重。评估脚本中 `get_model()` 函数需要能够加载 CL-LoRA 格式的权重。
+CL-LoRA checkpoint 不含 PEFT adapter（`adapter_model.safetensors`），而是用 `cl_lora_adapter.pt` 存储权重。`experiments/robot/openvla_utils.py` 的 `get_model()` 已支持 CL-LoRA：检测到 checkpoint 目录下有 `cl_lora_adapter.pt` 时会自动注入 `CLLoRALinear` 并加载权重。
 
-当前 `experiments/robot/openvla_utils.py` 的 `get_model()` 使用 PEFT 的 `from_pretrained()` 加载 adapter。对于 CL-LoRA checkpoint，需要在评估前**临时修补**模型加载逻辑：
+每步评估的命令模板：
+```bash
+cd /root/openvla-oft
 
-确认 `experiments/robot/openvla_utils.py` 中的 `get_model()` 是否已支持 CL-LoRA。如果未支持（报错找不到 adapter\_model.bin），临时方案是用 `finetune.py` 以 `--use_lora` 模式加载同一个 checkpoint（但会产生一份新的 LoRA adapter），或者直接在 eval 前手动注入 CL-LoRA 并加载 cl\_lora\_adapter.pt。
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint <CHECKPOINT路径> \
+  --task_suite_name <SUITE名> \
+  --use_proprio False \
+  --num_images_in_input 1 \
+  --lora_rank 16 \
+  --use_l1_regression True \
+  --num_trials_per_task 50
+```
 
-**评估命令与分支①完全相同，只换 checkpoint 路径和** **`--lora_rank 32`：**
+| 参数 | 分支② 的值 | 含义 | 能否改 |
+|---|---|---|---|
+| `--pretrained_checkpoint` | 每步不同（见下） | 要评估的 checkpoint 目录 | 每步改 |
+| `--task_suite_name` | `libero_spatial` / `libero_object` / `libero_goal` | 在哪个 LIBERO 套件里找任务 | 跨数据集时改 |
+| `--use_proprio` | `False` | 不用本体感知输入 | 不能改（训练就没开） |
+| `--num_images_in_input` | `1` | 单相机（无 wrist） | 不能改 |
+| `--lora_rank` | `32` | LoRA 秩，必须等于训练值 | 不能改 |
+| `--use_l1_regression` | `True` | 用 L1 回归动作头 | 不能改 |
+| `--num_trials_per_task` | `50` | 每个任务 rollout 次数 | 可调，50 是论文标准 |
+| `TARGET_TASK_NAME` | 每步不同（见下） | `run_libero_eval.py` 第 484 行硬编码，指定评估哪个具体任务 | 每步改 |
+
+---
+
+#### B2 — 评估 Task A（阶段一完成后）
+
+只评一个任务，一步完成。
+
+**Step 1：确认任务名。** 在服务器上跑：
+```bash
+cd /root/openvla-oft
+python -c "
+from libero.libero import benchmark
+suite = benchmark.get_benchmark_dict()['libero_spatial']()
+for i in range(suite.n_tasks):
+    print(f'ID {i}: {suite.get_task(i).name}')
+"
+```
+从输出中找到 **ID 6** 对应的名称（lora_exp.txt 中 Task A 用的是 ID 6），填到下一步。
+
+**Step 2：修改** `experiments/robot/libero/run_libero_eval.py` 第 484 行：
+```python
+TARGET_TASK_NAME = "从上面看到的 ID 6 的任务名"
+```
+
+**Step 3：确认 LIBERO 路径。** 评估脚本需要 LIBERO 的 `init_files`（含每个任务的初始状态文件）。先检查：
+```bash
+cat ~/.libero/config.yaml
+```
+看 `init_states` 指向的目录是否存在、里面有没有对应任务的 `.pruned_init` 文件。如果缺失，参考[LIBERO 环境排错](#libero-环境排错)一节。
+
+**Step 4：执行评估。**
+```bash
+cd /root/openvla-oft
+
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS-2/cl_lora_taskA_2k--2000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False \
+  --num_images_in_input 1 \
+  --lora_rank 16 \
+  --use_l1_regression True
+```
+
+**输出示例：** `Trials: 50 | Successes: 45 | Success Rate: 90.00%`
+
+---
+
+#### B4 — 评估 Task A + Task B（阶段二完成后）
+
+阶段二训练完 Task B 的 checkpoint 包含了 Task A 和 Task B 的知识（因为是从 Task A checkpoint 继续训练的）。只需评估这个最新 checkpoint，跑两次，每次改 `TARGET_TASK_NAME`。
 
 ```bash
-# B2 — 评估 Task A
-#     checkpoint: /root/autodl-tmp/LOGS-2/cl_lora_taskA_2k--2000_chkpt
-#     --task_suite_name libero_spatial  --lora_rank 32
+cd /root/openvla-oft
 
-# B4 — 评估 Task A + B
-#     checkpoint: /root/autodl-tmp/LOGS-2/cl_lora_taskB_no_replay--4000_chkpt
-#     --task_suite_name libero_spatial  --lora_rank 32
-#     (跑两次，分别改 TARGET_TASK_NAME)
+# --- 评估 Task A ---
+# 修改 run_libero_eval.py 第 484 行: TARGET_TASK_NAME = "Task A 任务名"
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS-2/cl_lora_taskB_no_replay--4000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False \
+  --num_images_in_input 1 \
+  --lora_rank 16
 
-# B6 — 评估 Task A + B + C（需要合并 statistics，同分支① A6 模式）
-#     checkpoint: /root/autodl-tmp/LOGS-2/cl_lora_taskC_no_replay--32000_chkpt
-#     --lora_rank 32
+# --- 评估 Task B ---
+# 修改 run_libero_eval.py 第 484 行: TARGET_TASK_NAME = "Task B 任务名"
+# (lora_exp.txt 中 Task B 用的是 ID 0)
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS-2/cl_lora_taskB_no_replay--4000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False \
+  --num_images_in_input 1 \
+  --lora_rank 16
+```
 
-# B8 — 评估 Task A + B + C + D（需要合并 statistics，同分支① A8 模式）
-#     checkpoint: /root/autodl-tmp/LOGS-2/cl_lora_taskD_no_replay--4000_chkpt
-#     --lora_rank 32
+> Task A 和 Task B 都在 `libero_spatial` 套件中，不需要跨数据集处理。
+
+**记录格式：**
+```
+                Task A    Task B
+分支② Stage 2    0.XX      0.XX
+```
+
+---
+
+#### B6 — 评估 Task A + B + C（阶段三完成后，跨数据集）
+
+**关键变化：** Task C 是在 `libero_object` 数据集上训练的，但评估 Task A/B 需要在 `libero_spatial` 套件中执行。`dataset_statistics.json` 只包含 `libero_object` 的统计信息，评估 Task A/B 时动作反归一化会出错——必须先合并 statistics。
+
+**Step 1：合并 dataset_statistics.json。** 把 `libero_spatial` 的统计信息合并进 Task C 的 checkpoint：
+
+```bash
+python -c "
+import json, shutil
+
+ckpt   = '/root/autodl-tmp/LOGS-2/cl_lora_taskC_no_replay--32000_chkpt'
+spatial_stats = '/root/autodl-tmp/LOGS-2/cl_lora_taskB_no_replay--4000_chkpt/dataset_statistics.json'
+
+# 备份
+shutil.copy(ckpt + '/dataset_statistics.json', ckpt + '/dataset_statistics.json.bak')
+
+with open(spatial_stats) as f:
+    s = json.load(f)
+with open(ckpt + '/dataset_statistics.json') as f:
+    c = json.load(f)
+
+c.update(s)   # 把 libero_spatial 的 action_mean/action_std 合并进来
+
+with open(ckpt + '/dataset_statistics.json', 'w') as f:
+    json.dump(c, f)
+print('Merged: libero_object + libero_spatial')
+"
+```
+
+**Step 2：三次评估。**
+
+```bash
+cd /root/openvla-oft
+
+# --- 评估 Task A (libero_spatial，跨数据集) ---
+# TARGET_TASK_NAME = "Task A 任务名"
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS-2/cl_lora_taskC_no_replay--32000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False --num_images_in_input 1 --lora_rank 16
+
+# --- 评估 Task B (libero_spatial，跨数据集) ---
+# TARGET_TASK_NAME = "Task B 任务名"
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS-2/cl_lora_taskC_no_replay--32000_chkpt \
+  --task_suite_name libero_spatial \
+  --use_proprio False --num_images_in_input 1 --lora_rank 16
+
+# --- 评估 Task C 自身 (libero_object，不需要合并) ---
+# TARGET_TASK_NAME = "Task C 的任务名"（用同样的 diagnostic 命令查 libero_object 套件）
+python experiments/robot/libero/run_libero_eval.py \
+  --pretrained_checkpoint /root/autodl-tmp/LOGS-2/cl_lora_taskC_no_replay--32000_chkpt \
+  --task_suite_name libero_object \
+  --use_proprio False --num_images_in_input 1 --lora_rank 16
+```
+
+> Task C 自身评估用的是 `libero_object` 套件，checkpoint 本身包含 object 的 statistics，不需要合并。
+
+**记录格式：**
+```
+                Task A    Task B    Task C
+分支② Stage 3    0.XX      0.XX      0.XX
+```
+
+---
+
+#### B8 — 评估 Task A + B + C + D（阶段四完成后，跨数据集）
+
+Task D 在 `libero_goal` 上训练，评估 Task A/B/C 都需要跨数据集。
+
+**Step 1：合并三个数据集的 statistics。**
+
+```bash
+python -c "
+import json, shutil
+
+ckpt = '/root/autodl-tmp/LOGS-2/cl_lora_taskD_no_replay--4000_chkpt'
+spatial_stats = '/root/autodl-tmp/LOGS-2/cl_lora_taskB_no_replay--4000_chkpt/dataset_statistics.json'
+object_stats  = '/root/autodl-tmp/LOGS-2/cl_lora_taskC_no_replay--32000_chkpt/dataset_statistics.json'
+
+shutil.copy(ckpt + '/dataset_statistics.json', ckpt + '/dataset_statistics.json.bak')
+
+with open(spatial_stats) as f: s = json.load(f)
+with open(object_stats) as f:  o = json.load(f)
+with open(ckpt + '/dataset_statistics.json') as f: d = json.load(f)
+
+d.update(s); d.update(o)
+
+with open(ckpt + '/dataset_statistics.json', 'w') as f:
+    json.dump(d, f)
+print('Merged: libero_goal + libero_spatial + libero_object')
+"
+```
+
+**Step 2：四次评估（每次改 `TARGET_TASK_NAME` 和 `--task_suite_name`）。**
+
+```bash
+cd /root/openvla-oft
+
+# Task A: --task_suite_name libero_spatial, TARGET_TASK_NAME = "Task A"
+# Task B: --task_suite_name libero_spatial, TARGET_TASK_NAME = "Task B"
+# Task C: --task_suite_name libero_object,  TARGET_TASK_NAME = "Task C"
+# Task D: --task_suite_name libero_goal,    TARGET_TASK_NAME = "Task D"
+
+# 共用 checkpoint:
+# --pretrained_checkpoint /root/autodl-tmp/LOGS-2/cl_lora_taskD_no_replay--4000_chkpt
+# --use_proprio False --num_images_in_input 1 --lora_rank 16
+```
+
+**记录格式：**
+```
+                Task A    Task B    Task C    Task D
+分支② Stage 4    0.XX      0.XX      0.XX      0.XX
+```
+
+---
+
+### LIBERO 环境排错
+
+评估脚本依赖 LIBERO 的初始化状态文件（`init_files/`）。如果遇到 `FileNotFoundError: ... pruned_init`：
+
+**1. 检查 LIBERO 路径配置：**
+```bash
+cat ~/.libero/config.yaml
+```
+
+**2. 检查 init_states 目录是否包含所需文件：**
+```bash
+ls ~/.libero/config.yaml 中 init_states 对应的路径/libero_spatial/
+```
+如果目录为空，需要下载 LIBERO 资源文件（`openvla-oft/LIBERO/libero/libero/assets/` 下的文件被 gitignore 排除，需单独获取）。
+
+**3. 如果资源文件已存在但路径不对，重新设置 LIBERO 默认路径：**
+```bash
+python -c "
+from libero.libero import set_libero_default_path
+set_libero_default_path('/root/openvla-oft/LIBERO/libero/libero')
+"
+```
+这会把 `~/.libero/config.yaml` 中的所有路径重写到指定目录下（`init_files`、`bddl_files`、`assets`、`datasets` 均以此为根）。
+
+**4. 验证修复：**
+```bash
+cat ~/.libero/config.yaml
+# 确认 init_states 指向的目录下存在 libero_spatial/*.pruned_init 文件
 ```
 
 ***
 
 ### 策略 A 评估：分支③④ CL-LoRA + Replay
 
-**与分支②完全相同**，只换对应的 checkpoint 路径：
+分支③④与分支②的唯一区别是 checkpoint 路径不同。评估命令模板、参数、`TARGET_TASK_NAME` 修改方式、跨数据集合并 statistics 步骤全部相同。
 
-| 步骤              | 分支③ checkpoint                            | 分支④ checkpoint                              |
-| --------------- | ----------------------------------------- | ------------------------------------------- |
-| 评估 Task A       | `cl_lora_taskA_2k--2000_chkpt`            | （共用分支②的 Task A checkpoint）                  |
-| 评估 Task A+B     | `cl_lora_taskB_proto_replay--4000_chkpt`  | `cl_lora_taskB_uniform_replay--4000_chkpt`  |
-| 评估 Task A+B+C   | `cl_lora_taskC_proto_replay--32000_chkpt` | `cl_lora_taskC_uniform_replay--32000_chkpt` |
-| 评估 Task A+B+C+D | `cl_lora_taskD_proto_replay--4000_chkpt`  | `cl_lora_taskD_uniform_replay--4000_chkpt`  |
+| 步骤 | 分支③ checkpoint | 分支④ checkpoint |
+|---|---|---|
+| 评估 Task A | `cl_lora_taskA_2k--2000_chkpt`（共用分支②） | （共用） |
+| 评估 Task A+B | `cl_lora_taskB_proto_replay--4000_chkpt` | `cl_lora_taskB_uniform_replay--4000_chkpt` |
+| 评估 Task A+B+C | `cl_lora_taskC_proto_replay--32000_chkpt` | `cl_lora_taskC_uniform_replay--32000_chkpt` |
+| 评估 Task A+B+C+D | `cl_lora_taskD_proto_replay--4000_chkpt` | `cl_lora_taskD_uniform_replay--4000_chkpt` |
 
-参数设置完全一致：`--lora_rank 32 --use_proprio False --num_images_in_input 1`，跨数据集时合并 statistics。
+评估命令直接把上面 B2/B4/B6/B8 命令中的 `--pretrained_checkpoint` 换成对应的即可。跨数据集合并 statistics 时 `ckpt` 和引用源也对应替换。
 
-***
+---
 
 ### 评估参数速查
 
 | 参数                      | 分支①       | 分支②③④    | 说明                      |
 | ----------------------- | --------- | -------- | ----------------------- |
-| `--lora_rank`           | 16        | 32       | 必须等于训练时使用的秩             |
+| `--lora_rank`           | 16        | 16       | 必须等于训练时使用的秩             |
 | `--use_proprio`         | False     | False    | 当前训练都没开 proprio         |
 | `--num_images_in_input` | 1         | 1        | 单相机（无 wrist camera）     |
 | `--use_l1_regression`   | True（默认）  | True（默认） | 用的是 L1 回归动作头            |
@@ -919,8 +1126,8 @@ BWT = mean(每个旧任务的最终成功率 - 其初始成功率)
 
 | 参数                                       | 分支①   | 分支②③④ | 说明                            |
 | ---------------------------------------- | ----- | ----- | ----------------------------- |
-| `lora_rank`                              | 16    | 32    | CL-LoRA 需要更大秩容纳多任务知识          |
-| `shared_depth`                           | —     | 16    | LLaMA-2 32 层的一半；越大抗遗忘越强但可塑性降低 |
+| `lora_rank`                              | 16    | 16    | 控制变量，必须与标准 LoRA 保持一致          |
+| `shared_depth`                           | —     | 8     | LLaMA-2 32 层的 1/4；越大抗遗忘越强但可塑性降低 |
 | `orthogonal_init`                        | —     | True  | 使不同任务 LoRA 子空间尽量正交            |
 | `freeze_a`                               | —     | True  | 冻结共享层 A 矩阵是抗遗忘核心              |
 | `use_block_scale`                        | —     | True  | 每层自动调节新旧任务平衡                  |
