@@ -584,7 +584,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         vla = inject_cl_lora_into_model(
             vla,
             rank=cfg.lora_rank,
-            alpha=min(cfg.lora_rank, 16),
+            alpha=cfg.lora_rank,
             dropout=cfg.lora_dropout,
             shared_split_ratio=shared_split_ratio,
             orthogonal_init=cfg.orthogonal_init,
