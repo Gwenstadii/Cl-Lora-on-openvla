@@ -41,7 +41,7 @@ from experiments.robot.openvla_utils import (
     model_is_on_hf_hub,
     update_auto_map,
 )
-from cl_lora import inject_cl_lora_into_model
+from cl_lora import CLLoRALinear, inject_cl_lora_into_model
 from replay_dataset import PrototypeReplayDataset
 
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
@@ -592,6 +592,25 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             use_block_scale=cfg.use_block_scale,
         )
         print(f"[CL-LoRA] Injected with shared_depth={cfg.shared_depth}, rank={cfg.lora_rank}")
+
+        # ---- PI 冻结原则：冻结所有主干，仅保留 LoRA + action_head 可训 ----
+        # Freeze ALL parameters first, then selectively unfreeze LoRA params
+        for name, param in vla.named_parameters():
+            param.requires_grad = False
+        # Unfreeze only LoRA params and block_scale
+        for name, param in vla.named_parameters():
+            if any(x in name for x in ['lora_a', 'lora_b', 'block_scale']):
+                # Respect the per-layer freeze_a setting (lora_a may still be frozen in shared layers)
+                if hasattr(param, '_frozen_by_cl_lora'):
+                    continue
+                param.requires_grad = True
+        # Re-apply freeze_a: shared layer lora_a must stay frozen
+        for name, module in vla.named_modules():
+            if isinstance(module, CLLoRALinear) and module.is_shared and module._freeze_a:
+                module.lora_a.requires_grad = False
+
+        lora_trainable = sum(p.numel() for p in vla.parameters() if p.requires_grad)
+        print(f"[CL-LoRA] LoRA trainable params after freeze: {lora_trainable:,}")
 
     # ---- Load previous stage checkpoint (sequential training) ----
     if cfg.previous_checkpoint_dir is not None:

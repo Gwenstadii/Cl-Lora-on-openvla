@@ -33,7 +33,7 @@ from experiments.robot.openvla_utils import (
     model_is_on_hf_hub,
     update_auto_map,
 )
-from cl_lora import inject_cl_lora_into_model
+from cl_lora import CLLoRALinear, inject_cl_lora_into_model
 
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
 from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction
@@ -868,6 +868,18 @@ def finetune(cfg: FinetuneConfig) -> None:
                 use_block_scale=cfg.use_block_scale,
             )
             print(f"[CL-LoRA] Injected with shared_depth={cfg.shared_depth}, rank={cfg.lora_rank}")
+
+            # PI 冻结原则：冻结视觉骨干 + LLM 主干，仅保留 LoRA 可训
+            for name, param in vla.named_parameters():
+                param.requires_grad = False
+            for name, param in vla.named_parameters():
+                if any(x in name for x in ['lora_a', 'lora_b', 'block_scale']):
+                    param.requires_grad = True
+            for name, module in vla.named_modules():
+                if isinstance(module, CLLoRALinear) and module.is_shared and module._freeze_a:
+                    module.lora_a.requires_grad = False
+            lora_params = sum(p.numel() for p in vla.parameters() if p.requires_grad)
+            print(f"[CL-LoRA] LoRA trainable params after freeze: {lora_params:,}")
         else:
             lora_config = LoraConfig(
                 r=cfg.lora_rank,
