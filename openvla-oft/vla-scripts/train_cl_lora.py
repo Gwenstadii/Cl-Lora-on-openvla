@@ -515,18 +515,61 @@ def compute_smoothened_metrics(metrics_deques: dict) -> dict:
     return smoothened
 
 
-def _collect_block_weight_vector(vla, detach: bool = False) -> Optional[torch.Tensor]:
-    """Collect per-block learnable weights mu_t^i into a vector (paper Section 4.3).
+def _extract_block_weights_from_ckpt(ckpt_dir: str) -> Optional[torch.Tensor]:
+    """Extract per-layer averaged block_scale from an existing v5 checkpoint's cl_lora_adapter.pt.
 
+    v5 checkpoints don't have block_weights.pt; this function reconstructs them from the adapter.
+    Returns a 1D tensor of shape (n_specific_layers,) or None.
+    """
+    adapter_path = os.path.join(ckpt_dir, "cl_lora_adapter.pt")
+    if not os.path.exists(adapter_path):
+        print(f"[BlockWeight] No adapter found at {adapter_path}")
+        return None
+
+    adapter = torch.load(adapter_path, map_location="cpu")
+    layer_weights = {}
+    for key, val in adapter.items():
+        if 'block_scale' in key:
+            # Extract layer index from key like "...layers.15.self_attn.q_proj.block_scale"
+            parts = key.split('.')
+            for i, p in enumerate(parts):
+                if p == 'layers' and i + 1 < len(parts):
+                    try:
+                        layer_idx = int(parts[i + 1])
+                        if layer_idx not in layer_weights:
+                            layer_weights[layer_idx] = []
+                        layer_weights[layer_idx].append(val.item())
+                    except ValueError:
+                        pass
+
+    if not layer_weights:
+        return None
+
+    # Average block_scale across all modules in each specific layer
+    result = []
+    for idx in sorted(layer_weights.keys()):
+        avg = sum(layer_weights[idx]) / len(layer_weights[idx])
+        result.append(avg)
+    return torch.tensor(result)
+
+
+def _collect_block_weight_vector(vla, detach: bool = False) -> Optional[torch.Tensor]:
+    """Collect per-layer block_scale vector mu_t for L_orth (paper Section 4.3).
+
+    Averages block_scale across all modules in each specific LlamaDecoderLayer.
     Returns a 1D tensor of shape (n_specific_layers,), or None if no block weights exist.
-    Set detach=True when saving (no gradients needed).
     """
     weights = []
     for name, module in vla.named_modules():
         if module.__class__.__name__ == "LlamaDecoderLayer":
-            if hasattr(module, 'cl_block_weight'):
-                w = module.cl_block_weight
-                weights.append(w.detach().clone() if detach else w)
+            bw_list = []
+            for n2, m2 in module.named_modules():
+                if hasattr(m2, 'block_scale') and m2.block_scale is not None:
+                    w = m2.block_scale
+                    bw_list.append(w.detach().clone() if detach else w)
+            if bw_list:
+                avg = torch.stack(bw_list).mean(dim=0)
+                weights.append(avg)
     if not weights:
         return None
     return torch.stack(weights)
@@ -551,11 +594,17 @@ def _compute_orthogonality_loss(
 
     for prev_dir in cfg.orth_previous_block_weight_dirs:
         prev_path = os.path.join(prev_dir, "block_weights.pt")
-        if not os.path.exists(prev_path):
-            print(f"[L_orth] Previous block weights not found: {prev_path}")
-            continue
-        U_prev = torch.load(prev_path, map_location=current_weights.device)
-        U_prev = U_prev / (U_prev.norm() + 1e-8)
+        if os.path.exists(prev_path):
+            U_prev = torch.load(prev_path, map_location=current_weights.device)
+        else:
+            # v5 checkpoint: extract from cl_lora_adapter.pt and save for future use
+            U_prev = _extract_block_weights_from_ckpt(prev_dir)
+            if U_prev is None:
+                print(f"[L_orth] Cannot load block weights from: {prev_dir}")
+                continue
+            torch.save(U_prev, prev_path)
+            print(f"[L_orth] Extracted and saved block weights from {prev_dir}")
+        U_prev = U_prev.to(current_weights.device) / (U_prev.norm() + 1e-8)
         # Dot product: larger = more similar block usage = more interference
         dot = torch.abs(torch.dot(U_current, U_prev))
         loss_orth = loss_orth + dot
@@ -958,7 +1007,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                         _json.dump(cl_config, _f)
 
                     # Save CL-LoRA adapter (trainable params only)
-                    cl_lora_state = {k: v.cpu() for k, v in vla.module.state_dict().items() if any(x in k for x in ['lora_a', 'lora_b', 'block_scale'])}
+                    cl_lora_state = {k: v.cpu() for k, v in vla.module.state_dict().items() if any(x in k for x in ['lora_a', 'lora_b', 'block_scale', 'cl_block_weight'])}
                     torch.save(cl_lora_state, checkpoint_dir / "cl_lora_adapter.pt")
 
                     # Save action head
@@ -1003,7 +1052,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         with open(final_dir / "cl_lora_config.json", "w") as _f:
             _json.dump(cl_config, _f)
         processor.save_pretrained(final_dir)
-        cl_lora_state = {k: v.cpu() for k, v in vla.module.state_dict().items() if any(x in k for x in ['lora_a', 'lora_b', 'block_scale'])}
+        cl_lora_state = {k: v.cpu() for k, v in vla.module.state_dict().items() if any(x in k for x in ['lora_a', 'lora_b', 'block_scale', 'cl_block_weight'])}
         torch.save(cl_lora_state, final_dir / "cl_lora_adapter.pt")
         if action_head is not None:
             torch.save(action_head.module.state_dict(), final_dir / f"action_head--{cfg.max_steps}_checkpoint.pt")

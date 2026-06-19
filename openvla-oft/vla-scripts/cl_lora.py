@@ -9,7 +9,7 @@ Key design (Section 4):
   1. Task-SHARED adapters in first l blocks: B (down-proj) = fixed random orthogonal,
      A (up-proj) = zero-init + trainable. B frozen, A continuously updated.
   2. Task-SPECIFIC adapters in remaining N-l blocks: standard LoRA (A/B both
-     trainable) with per-BLOCK learnable scaling weights mu_t^i.
+     trainable) with learnable block-wise scaling weights mu_t^i (per module).
   3. Orthogonality loss L_orth between block weight vectors of different tasks.
   4. Visual backbone and LLM base weights fully frozen.
 """
@@ -30,7 +30,7 @@ class CLLoRALinear(nn.Module):
     Specific layers (paper Eq.5, 11):
       A(lora_a, down-proj) = kaiming init, trainable
       B(lora_b, up-proj)   = zero-init, trainable
-      scaled by per-BLOCK learnable weight mu (block_scale)
+      scaled by learnable block_scale mu (per module)
 
     Forward:  result = Wx + scaling * mu * lora_b @ lora_a @ x
     """
@@ -44,7 +44,7 @@ class CLLoRALinear(nn.Module):
         is_shared: bool = True,
         orthogonal_init: bool = True,
         freeze_a: bool = True,
-        block_scale: nn.Parameter = None,
+        use_block_scale: bool = True,
     ):
         super().__init__()
         self.in_features = base_layer.in_features
@@ -67,9 +67,11 @@ class CLLoRALinear(nn.Module):
         self.lora_b = nn.Parameter(torch.zeros(self.out_features, rank))
         self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
 
-        # Per-BLOCK learnable scaling weight (shared across all modules in a specific layer)
-        # This is a nn.Parameter created at the layer level, shared by reference
-        self.block_scale = block_scale
+        # Per-module learnable block_scale (specific layers only)
+        if not self.is_shared and use_block_scale:
+            self.block_scale = nn.Parameter(torch.tensor(0.0))
+        else:
+            self.register_parameter('block_scale', None)
 
         self._orthogonal_init = orthogonal_init
         self._freeze_a = freeze_a and is_shared
@@ -96,11 +98,16 @@ class CLLoRALinear(nn.Module):
 
         scale = self.scaling
         if self.block_scale is not None:
-            # Paper: mu_t^i modulates LoRA contribution per block
             effective_scale = 1.0 + 0.5 * torch.tanh(self.block_scale)
             scale = scale * effective_scale
 
         return result + lora_out * scale
+
+    def collect_block_scale(self):
+        """Return block_scale value for L_orth computation (paper Eq.12)."""
+        if self.block_scale is not None:
+            return self.block_scale.detach().clone()
+        return None
 
 
 def inject_cl_lora_into_model(
@@ -116,16 +123,13 @@ def inject_cl_lora_into_model(
 ):
     """Inject CL-LoRA into LlamaDecoderLayer transformer blocks.
 
-    Paper alignment:
-      - target_modules default: ["q_proj", "v_proj"] — matches paper's Wq, Wv only
-      - Block weights: one scalar per SPECIFIC transformer layer (paper's mu_t^i)
-      - Shared in first l blocks, specific in remaining N-l blocks
+    Block weights: per-module learnable scalar inside each CLLoRALinear (mu_t^i).
+    L_orth uses the average block_scale per specific layer.
     """
     if target_modules is None:
         target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                           "gate_proj", "up_proj", "down_proj"]
 
-    # Step 1: discover LlamaDecoderLayer depth ordering
     llama_layers = []
     for name, module in model.named_modules():
         if module.__class__.__name__ == "LlamaDecoderLayer":
@@ -135,39 +139,21 @@ def inject_cl_lora_into_model(
     if total_depth == 0:
         raise RuntimeError("No LlamaDecoderLayer found in model.")
 
-    # Paper: shared in first l blocks, specific in remaining N-l
     shared_depth_count = max(1, int(total_depth * shared_split_ratio))
     specific_depth_count = total_depth - shared_depth_count
 
-    print(f"\n--- Injecting CL-LoRA (CVPR 2025 paper scope) ---")
+    print(f"\n--- Injecting CL-LoRA (per-module block_scale, PI scope) ---")
     print(f"LlamaDecoderLayer depth: {total_depth}")
-    print(f"Shared layers (fixed B, train A):  0 to {shared_depth_count - 1} ({shared_depth_count} layers)")
-    print(f"Specific layers (both train, +mu):  {shared_depth_count} to {total_depth - 1} ({specific_depth_count} layers)")
+    print(f"Shared layers (fixed B, train A):  0 to {shared_depth_count - 1}")
+    print(f"Specific layers (both train, +mu): {shared_depth_count} to {total_depth - 1}")
     print(f"Target modules:                     {target_modules}")
-    print(f"Vision backbone:                    UNTOUCHED (frozen)")
-    print(f"lm_head / projector:                UNTOUCHED (frozen)\n")
+    print(f"Vision backbone:                    UNTOUCHED (frozen)\n")
 
-    # Step 2: create per-BLOCK learnable weights for specific layers (paper's mu_t^i)
-    block_weights = {}
-    if use_block_scale and specific_depth_count > 0:
-        for layer_idx in range(shared_depth_count, total_depth):
-            layer_name, layer_module = llama_layers[layer_idx]
-            # One scalar per transformer BLOCK (shared by all injected modules in this layer)
-            bw = nn.Parameter(torch.tensor(0.0))
-            # Register on the layer module so it's part of the model
-            layer_module.register_parameter(f"cl_block_weight", bw)
-            block_weights[layer_name] = bw
-        print(f"Created {len(block_weights)} per-BLOCK learnable weights (mu_t^i).\n")
-
-    # Step 3: replace Linear layers with CLLoRALinear
     replaced_shared = 0
     replaced_specific = 0
 
     for layer_idx, (layer_name, layer_module) in enumerate(llama_layers):
         is_shared = layer_idx < shared_depth_count
-
-        # Get the per-block weight for specific layers
-        bw = block_weights.get(layer_name, None)
 
         for name, module in layer_module.named_modules():
             if any(name.endswith(t) for t in target_modules) and isinstance(module, nn.Linear):
@@ -185,7 +171,7 @@ def inject_cl_lora_into_model(
                     is_shared=is_shared,
                     orthogonal_init=orthogonal_init,
                     freeze_a=freeze_a,
-                    block_scale=bw,  # shared per-BLOCK weight
+                    use_block_scale=use_block_scale,
                 ).to(module.weight.device).to(module.weight.dtype)
 
                 setattr(parent_module, child_name, cl_lora_layer)
@@ -195,8 +181,5 @@ def inject_cl_lora_into_model(
                     replaced_specific += 1
 
     print(f"Replaced {replaced_shared} shared + {replaced_specific} specific = "
-          f"{replaced_shared + replaced_specific} Linear layers with CLLoRALinear.")
-    print(f"(Expected: {shared_depth_count}×{len(target_modules)} + "
-          f"{specific_depth_count}×{len(target_modules)} = "
-          f"{total_depth * len(target_modules)})\n")
+          f"{replaced_shared + replaced_specific} Linear layers with CLLoRALinear.\n")
     return model
