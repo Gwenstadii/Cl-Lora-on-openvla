@@ -52,14 +52,15 @@ cd /root/openvla-oft
   A8  合并 dataset_statistics.json → 评估 Task A+B+C+D  ← 分支①全部完成
 
 ═══ 分支②：CL-LoRA + no replay ═══════════════════════════════════════
+  （CL-LoRA CVPR 2025 paper-aligned: per-layer block weights + L_orth）
 
-  B1  训练 Task A                           train_cl_lora.py（--use_kd False --use_replay False）
+  B1  训练 Task A                           train_cl_lora.py（无 L_orth）
   B2  评估 Task A
-  B3  训练 Task B（--previous_checkpoint_dir 指向 B1，--use_kd False --use_replay False）
+  B3  训练 Task B（--orth_previous_block_weight_dirs 指向 B1, 启用 L_orth）
   B4  评估 Task A + B
-  B5  训练 Task C（--previous_checkpoint_dir 指向 B3，切换数据集）
+  B5  训练 Task C（--orth_previous_block_weight_dirs 指向 B1+B3, 切换数据集）
   B6  合并 dataset_statistics.json → 评估 Task A+B+C
-  B7  训练 Task D（--previous_checkpoint_dir 指向 B5，切换数据集）
+  B7  训练 Task D（--orth_previous_block_weight_dirs 指向 B1+B3+B5, 切换数据集）
   B8  合并 dataset_statistics.json → 评估 Task A+B+C+D  ← 分支②全部完成
 
 ═══ 分支③：CL-LoRA + Prototype Replay ════════════════════════════════
@@ -193,44 +194,48 @@ Checkpoint 输出路径: `$LOGS_ROOT/overfit_test_2000_steps_bs1--2000_chkpt/`
 ### 分支②  CL-LoRA + no replay
 
 ```bash
-cd /root/openvla-oft/Cl-Lora-on-openvla/openvla-oft
+cd /root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft
 
 WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl_lora.py \
-  --vla_path $VLA_PATH \
-  --data_root_dir $DATA_ROOT \
+  --vla_path $VLA_PATH --data_root_dir $DATA_ROOT \
   --dataset_name "libero_spatial_no_noops" \
-  --run_id_override "cl_lora_taskA_2k" \
-  --batch_size 1 \
-  --grad_accumulation_steps 8 \
-  --learning_rate 5e-4 \
-  --use_cl_lora True \
-  --lora_rank 16 \
-  --shared_depth 8 \
-  --orthogonal_init True \
-  --freeze_a True \
-  --use_block_scale True \
-  --use_kd False \
-  --use_replay False \
-  --stage 1 \
-  --max_steps 2000 \
-  --save_freq 1000 \
-  --image_aug True \
+  --run_id_override "cl_lora_taskA" \
+  --batch_size 1 --grad_accumulation_steps 8 --learning_rate 5e-4 \
+  --lr_warmup_steps 200 --num_steps_before_decay 100000 \
+  --use_cl_lora True --lora_rank 16 \
+  --shared_depth 8 --orthogonal_init True --freeze_a True --use_block_scale True \
+  --use_kd False --use_replay False --stage 1 \
+  --max_steps 6000 --save_freq 2000 --image_aug True \
   --run_root_dir $LOGS_ROOT
 ```
 
 | 参数 | 值 | 与分支①对比 |
 |---|---|---|
-| `--lora_rank` | 16 | **相同**（控制变量：rank 必须一致） |
-| `--shared_depth` | 8 | 分支①无此概念，CL-LoRA 特有的浅层共享 |
-| `--orthogonal_init` | True | CL-LoRA 特有：共享层 A 矩阵正交初始化 |
-| `--freeze_a` | True | CL-LoRA 特有：共享层 A 冻结，保护旧知识 |
-| `--use_block_scale` | True | CL-LoRA 特有：特定层可学习门控系数 |
-| `--save_freq` | 1000 | 每千步存一次，支持断点续训 |
-| 其余参数 | 同分支① | 学习率、batch、aug 等完全一致 |
+| `--lora_rank` | 16 | **相同**（控制变量） |
+| `--shared_depth` | 8 | 前8层共享（A冻结），后24层特定（A+B可训） |
+| `--orthogonal_init` | True | 共享层 A 矩阵正交初始化 |
+| `--freeze_a` | True | 共享层 A 冻结，保护旧知识 |
+| `--use_block_scale` | True | 特定层可学习门控系数 |
+| `--learning_rate` | 5e-4 | **相同**（控制变量） |
+| `--max_steps` | 6000 | CL-LoRA 收敛更慢，需要更多步数 |
+| `--lr_warmup_steps` | 200 | 配合高 LR 的短预热 |
+| `--save_freq` | 2000 | 每 2000 步存一次 |
 
-Checkpoint 输出路径: `$LOGS_ROOT/cl_lora_taskA_2k--2000_chkpt/`
+**冻结原则：** 视觉骨干（SigLIP）+ LLM 主干完整冻结，仅 LoRA 参数 + 动作头可训。
 
-> 训练完成后需要补 `dataset_statistics.json` 的 key（评估时需要），参见[评估准备](#评估前准备)。分支③④ 的阶段一与此完全相同（`--use_kd False --use_replay False`），共用同一个 checkpoint。
+Checkpoint 输出路径: `$LOGS_ROOT/cl_lora_taskA--6000_chkpt/`
+
+> **分支② 已验证结果：**
+> - Stage 1 (Task A)：6000 步 = **100%**
+> - Stage 2 (Task B)：从 Task A v5 checkpoint 继续训练 6000 步
+>   - Task A 保持率：**86%**（遗忘 14%）
+>   - Task B 成功率：**94%**
+> 
+> **配置：** rank=16, shared_depth=8, lr=5e-4, warmup=200, max_steps=6000
+> 
+> **结论：** CL-LoRA 在未使用 KD 和 replay 的情况下，仅靠结构约束（8 层共享层 orthogonal init + freeze A）在 OpenVLA-7B 上实现了单任务 94% 成功率，同时旧任务保持 86%。首次证明了该结构在非 PI 模型上仍然有效。
+> 
+> **评估前需要补 `dataset_statistics.json` 的 key**（参见评估章节）。分支③④ 的阶段一与此完全相同（`--use_kd False --use_replay False`），共用同一个 checkpoint。
 
 ***
 
@@ -308,18 +313,19 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/finetune
 ### 分支② CL-LoRA + no replay
 
 ```bash
+TASK_A_CKPT="$LOGS_ROOT/cl_lora_taskA--6000_chkpt"
+
 WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl_lora.py \
-  --vla_path $VLA_PATH \
-  --data_root_dir $DATA_ROOT \
+  --vla_path $VLA_PATH --data_root_dir $DATA_ROOT \
   --dataset_name "libero_spatial_no_noops" \
   --run_id_override "cl_lora_taskB_no_replay" \
   --batch_size 1 --grad_accumulation_steps 8 --learning_rate 5e-4 \
+  --lr_warmup_steps 200 --num_steps_before_decay 100000 \
   --use_cl_lora True --lora_rank 16 \
   --shared_depth 8 --orthogonal_init True --freeze_a True --use_block_scale True \
-  --use_kd False --use_replay False \
-  --stage 2 \
-  --previous_checkpoint_dir $TASK_A_CL_CKPT --previous_checkpoint_step 2000 \
-  --max_steps 4000 --save_freq 1000 --image_aug True \
+  --use_kd False --use_replay False --stage 2 \
+  --previous_checkpoint_dir $TASK_A_CKPT --previous_checkpoint_step 6000 \
+  --max_steps 6000 --save_freq 2000 --image_aug True \
   --run_root_dir $LOGS_ROOT
 ```
 
@@ -343,7 +349,7 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl
   --use_replay True --replay_buffer_dirs $PROTO_BUFFER \
   --replay_loss_weight 1.0 --replay_every_n_steps 1 \
   --stage 2 \
-  --previous_checkpoint_dir $TASK_A_CL_CKPT --previous_checkpoint_step 2000 \
+  --previous_checkpoint_dir $TASK_A_CKPT --previous_checkpoint_step 6000 \
   --max_steps 4000 --save_freq 1000 --image_aug True \
   --run_root_dir $LOGS_ROOT
 ```
@@ -366,7 +372,7 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl
   --use_replay True --replay_buffer_dirs $UNIFORM_BUFFER \
   --replay_loss_weight 1.0 --replay_every_n_steps 1 \
   --stage 2 \
-  --previous_checkpoint_dir $TASK_A_CL_CKPT --previous_checkpoint_step 2000 \
+  --previous_checkpoint_dir $TASK_A_CKPT --previous_checkpoint_step 6000 \
   --max_steps 4000 --save_freq 1000 --image_aug True \
   --run_root_dir $LOGS_ROOT
 ```
@@ -412,7 +418,7 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl
   --shared_depth 8 --orthogonal_init True --freeze_a True --use_block_scale True \
   --use_kd False --use_replay False \
   --stage 3 \
-  --previous_checkpoint_dir $TASK_B_CL_CKPT --previous_checkpoint_step 4000 \
+  --previous_checkpoint_dir $TASK_B_CL_CKPT --previous_checkpoint_step 6000 \
   --max_steps 32000 --save_freq 8000 --image_aug True \
   --run_root_dir $LOGS_ROOT
 ```
@@ -445,14 +451,14 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl
   --use_kd True \
   --lambda_kd 1.0 \
   --teacher_checkpoint_dir $TASK_B_CL_CKPT \
-  --teacher_checkpoint_step 4000 \
+  --teacher_checkpoint_step 6000 \
   --use_replay True \
   --replay_buffer_dirs $PROTO_BUFFER_A $PROTO_BUFFER_B \
   --replay_loss_weight 1.0 \
   --replay_every_n_steps 1 \
   --stage 3 \
   --previous_checkpoint_dir $TASK_B_CL_CKPT \
-  --previous_checkpoint_step 4000 \
+  --previous_checkpoint_step 6000 \
   --max_steps 32000 \
   --save_freq 16000 \
   --image_aug True \
@@ -1057,7 +1063,7 @@ torchrun --standalone --nproc_per_node 1 vla-scripts/finetune.py \
 torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl_lora.py \
   --vla_path $VLA_PATH \
   --previous_checkpoint_dir /root/autodl-tmp/LOGS/my_cl_run--2000_chkpt \
-  --previous_checkpoint_step 2000 \
+  --previous_checkpoint_step 6000 \
   --resume True \
   --resume_step 2000 \
   --max_steps 4000 \
@@ -1082,7 +1088,7 @@ torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl_lora.py \
 
 # train_cl_lora.py：用 --previous_checkpoint_dir 加载上一阶段 CL-LoRA 权重
 --previous_checkpoint_dir /root/autodl-tmp/LOGS/taskA--2000_chkpt
---previous_checkpoint_step 2000
+--previous_checkpoint_step 6000
 --stage 2
 ```
 

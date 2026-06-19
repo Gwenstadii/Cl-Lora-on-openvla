@@ -122,6 +122,13 @@ class TrainCLConfig:
     teacher_checkpoint_dir: Optional[str] = None
     teacher_checkpoint_step: Optional[int] = None
 
+    # ---- Paper: Orthogonality loss between block weights (Section 4.3, Eq.12) ----
+    lambda_orth: float = 0.0001                     # Weight for L_orth between block weight vectors
+    orth_previous_block_weight_dirs: List[str] = field(default_factory=list)  # Previous stage checkpoints for block weight loading
+
+    # ---- Injection scope (paper: Wq, Wv only) ----
+    cl_target_modules: List[str] = field(default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
+
     # ---- Replay ----
     use_replay: bool = False
     replay_buffer_dirs: List[str] = field(default_factory=list)
@@ -508,6 +515,54 @@ def compute_smoothened_metrics(metrics_deques: dict) -> dict:
     return smoothened
 
 
+def _collect_block_weight_vector(vla, detach: bool = False) -> Optional[torch.Tensor]:
+    """Collect per-block learnable weights mu_t^i into a vector (paper Section 4.3).
+
+    Returns a 1D tensor of shape (n_specific_layers,), or None if no block weights exist.
+    Set detach=True when saving (no gradients needed).
+    """
+    weights = []
+    for name, module in vla.named_modules():
+        if module.__class__.__name__ == "LlamaDecoderLayer":
+            if hasattr(module, 'cl_block_weight'):
+                w = module.cl_block_weight
+                weights.append(w.detach().clone() if detach else w)
+    if not weights:
+        return None
+    return torch.stack(weights)
+
+
+def _compute_orthogonality_loss(
+    current_weights: torch.Tensor,
+    cfg,
+) -> torch.Tensor:
+    """Compute L_orth between current and previous block weight vectors (paper Eq.12).
+
+    L_orth = sum_{prev} |U_current · U_prev|  (dot product of block weight vectors)
+
+    Penalizes similarity between block weight vectors of different tasks,
+    encouraging them to use different transformer blocks and reducing interference.
+    """
+    loss_orth = torch.tensor(0.0, device=current_weights.device)
+    if not cfg.orth_previous_block_weight_dirs:
+        return loss_orth
+
+    U_current = current_weights / (current_weights.norm() + 1e-8)
+
+    for prev_dir in cfg.orth_previous_block_weight_dirs:
+        prev_path = os.path.join(prev_dir, "block_weights.pt")
+        if not os.path.exists(prev_path):
+            print(f"[L_orth] Previous block weights not found: {prev_path}")
+            continue
+        U_prev = torch.load(prev_path, map_location=current_weights.device)
+        U_prev = U_prev / (U_prev.norm() + 1e-8)
+        # Dot product: larger = more similar block usage = more interference
+        dot = torch.abs(torch.dot(U_current, U_prev))
+        loss_orth = loss_orth + dot
+
+    return loss_orth
+
+
 def log_metrics_to_wandb(metrics: dict, prefix: str, step: int, wandb_run) -> None:
     log_dict = {}
     for name, value in metrics.items():
@@ -590,8 +645,10 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             orthogonal_init=cfg.orthogonal_init,
             freeze_a=cfg.freeze_a,
             use_block_scale=cfg.use_block_scale,
+            target_modules=cfg.cl_target_modules,
         )
-        print(f"[CL-LoRA] Injected with shared_depth={cfg.shared_depth}, rank={cfg.lora_rank}")
+        print(f"[CL-LoRA] Injected with shared_depth={cfg.shared_depth}, rank={cfg.lora_rank}, "
+              f"modules={cfg.cl_target_modules}")
 
         # ---- PI 冻结原则：冻结所有主干，仅保留 LoRA + action_head 可训 ----
         # Freeze ALL parameters first, then selectively unfreeze LoRA params
@@ -822,12 +879,24 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                     )
                     metrics["loss_replay"] = loss_replay.item()
 
-            # 4. Total loss
-            loss_total = loss_task + cfg.lambda_kd * loss_kd + cfg.replay_loss_weight * loss_replay
+            # 4. Orthogonality loss (paper Eq.12, Section 4.3)
+            loss_orth = torch.tensor(0.0, device=device_id)
+            if cfg.lambda_orth > 0 and cfg.use_block_scale and len(cfg.orth_previous_block_weight_dirs) > 0:
+                block_weights = _collect_block_weight_vector(vla.module, detach=False)
+                if block_weights is not None:
+                    loss_orth = _compute_orthogonality_loss(block_weights, cfg)
+            metrics["loss_orth"] = loss_orth.item() if isinstance(loss_orth, torch.Tensor) else 0.0
+
+            # 5. Total loss
+            loss_total = (loss_task + cfg.lambda_kd * loss_kd
+                          + cfg.replay_loss_weight * loss_replay
+                          + cfg.lambda_orth * loss_orth)
 
             # Store metrics
             metrics["loss_task"] = loss_task.item()
             metrics["loss_kd"] = loss_kd.item() if isinstance(loss_kd, torch.Tensor) else loss_kd
+            if "loss_orth" not in metrics:
+                metrics["loss_orth"] = 0.0
             for name in recent_metrics:
                 if name in metrics:
                     recent_metrics[name].append(metrics[name])
@@ -883,6 +952,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                         "orthogonal_init": cfg.orthogonal_init,
                         "freeze_a": cfg.freeze_a,
                         "use_block_scale": cfg.use_block_scale,
+                        "target_modules": cfg.cl_target_modules,
                     }
                     with open(checkpoint_dir / "cl_lora_config.json", "w") as _f:
                         _json.dump(cl_config, _f)
@@ -897,6 +967,11 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
 
                     # Save teacher snapshot (for next stage)
                     save_teacher_snapshot(vla.module, action_head.module if action_head is not None else None, checkpoint_dir, log_step)
+
+                    # Save block weights for L_orth in next stages (paper Eq.12)
+                    bw = _collect_block_weight_vector(vla.module, detach=True)
+                    if bw is not None:
+                        torch.save(bw, checkpoint_dir / "block_weights.pt")
 
                     # Save dataset statistics
                     save_dataset_statistics(train_dataset.dataset_statistics, checkpoint_dir)
@@ -933,6 +1008,9 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         if action_head is not None:
             torch.save(action_head.module.state_dict(), final_dir / f"action_head--{cfg.max_steps}_checkpoint.pt")
         save_teacher_snapshot(vla.module, action_head.module if action_head is not None else None, final_dir, cfg.max_steps)
+        bw = _collect_block_weight_vector(vla.module, detach=True)
+        if bw is not None:
+            torch.save(bw, final_dir / "block_weights.pt")
         save_dataset_statistics(train_dataset.dataset_statistics, final_dir)
         print(f"Final checkpoint saved → {final_dir}")
 
