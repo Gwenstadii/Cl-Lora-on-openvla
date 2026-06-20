@@ -41,7 +41,9 @@ from experiments.robot.openvla_utils import (
     model_is_on_hf_hub,
     update_auto_map,
 )
-from cl_lora import CLLoRALinear, inject_cl_lora_into_model
+from cl_lora import (CLLoRALinear, inject_cl_lora_into_model,
+                      save_task_snapshot, load_task_snapshot,
+                      reinit_task_specific_for_new_stage)
 from replay_dataset import PrototypeReplayDataset
 
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
@@ -613,37 +615,41 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         print(f"[CL-LoRA] LoRA trainable params after freeze: {lora_trainable:,}")
 
     # ---- Load previous stage checkpoint (sequential training) ----
-    _pending_action_head_state = None
-    _pending_vision_state = None
     if cfg.previous_checkpoint_dir is not None:
         prev_dir = cfg.previous_checkpoint_dir
         prev_step = cfg.previous_checkpoint_step or cfg.max_steps
         print(f"[Stage {cfg.stage}] Loading previous checkpoint from {prev_dir} (step {prev_step})")
 
-        # ---- CRITICAL: Load CL-LoRA adapter from previous stage ----
-        adapter_path = os.path.join(prev_dir, "cl_lora_adapter.pt")
-        if os.path.exists(adapter_path):
-            print(f"[Stage {cfg.stage}] Loading CL-LoRA adapter from {adapter_path}")
-            prev_adapter = torch.load(adapter_path, map_location="cpu")
-            # Apply freeze filter AFTER loading
-            missing, unexpected = vla.load_state_dict(prev_adapter, strict=False)
-            if missing:
-                print(f"[Stage {cfg.stage}]   Missing keys in adapter: {len(missing)}")
-            if unexpected:
-                print(f"[Stage {cfg.stage}]   Unexpected keys in adapter: {len(unexpected)}")
-            print(f"[Stage {cfg.stage}] CL-LoRA adapter loaded successfully")
-        else:
-            raise FileNotFoundError(
-                f"previous_checkpoint_dir specified but cl_lora_adapter.pt not found in {prev_dir}. "
-                "Make sure the previous stage checkpoint is complete."
-            )
+        # Load CL-LoRA adapter weights from previous stage (transfer specific A/B)
+        if cfg.use_cl_lora:
+            prev_adapter_path = os.path.join(prev_dir, "cl_lora_adapter.pt")
+            if os.path.exists(prev_adapter_path):
+                prev_adapter = torch.load(prev_adapter_path, map_location="cpu")
+                missing, unexpected = vla.load_state_dict(prev_adapter, strict=False)
+                print(f"[Stage {cfg.stage}] Loaded {len(prev_adapter)} CL-LoRA params from previous stage "
+                      f"(missing keys: {len(missing)}, unexpected: {len(unexpected)})")
+            else:
+                print(f"[Stage {cfg.stage}] WARNING: cl_lora_adapter.pt not found at {prev_adapter_path}")
 
         # Load action_head
         if cfg.use_l1_regression or cfg.use_diffusion:
-            _pending_action_head_state = load_checkpoint("action_head", prev_dir, prev_step)
-        # Load vision_backbone (only if FiLM)
+            ah_state = load_checkpoint("action_head", prev_dir, prev_step)
+            _pending_action_head_state = ah_state
+        else:
+            _pending_action_head_state = None
+        # Load vision_backbone if FiLM
+        _pending_vision_state = None
         if cfg.use_film:
             _pending_vision_state = load_checkpoint("vision_backbone", prev_dir, prev_step)
+    else:
+        _pending_action_head_state = None
+        _pending_vision_state = None
+
+    # ---- Task isolation: reinit task-specific params for new stage ----
+    # Must happen AFTER loading previous checkpoint (so specific A/B are loaded first,
+    # but shared B and block_scale are reset for the new task)
+    if cfg.use_cl_lora and cfg.stage > 1 and cfg.previous_checkpoint_dir is not None:
+        reinit_task_specific_for_new_stage(vla, cfg.shared_depth)
 
     # ---- FiLM ----
     if cfg.use_film:
@@ -706,27 +712,12 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     if cfg.use_diffusion:
         NUM_PATCHES += 1
 
-    # ---- Optimizer (PI-style: no weight decay on lora_a / block_scale) ----
-    decay_params, no_decay_params = [], []
-    for n, p in vla.named_parameters():
-        if not p.requires_grad:
-            continue
-        if any(x in n for x in ['lora_a', 'block_scale']):
-            no_decay_params.append(p)
-        else:
-            decay_params.append(p)
+    # ---- Optimizer ----
+    trainable_params = [p for p in vla.parameters() if p.requires_grad]
     if action_head is not None:
-        for n, p in action_head.named_parameters():
-            if p.requires_grad:
-                decay_params.append(p)
-    total_trainable = sum(p.numel() for p in decay_params + no_decay_params)
-    print(f"# total trainable params: {total_trainable:,}")
-    print(f"  with weight decay: {sum(p.numel() for p in decay_params):,}")
-    print(f"  no weight decay:   {sum(p.numel() for p in no_decay_params):,}")
-    optimizer = AdamW([
-        {'params': decay_params, 'weight_decay': 0.01},
-        {'params': no_decay_params, 'weight_decay': 0.0},
-    ], lr=cfg.learning_rate)
+        trainable_params += [p for p in action_head.parameters() if p.requires_grad]
+    print(f"# total trainable params: {sum(p.numel() for p in trainable_params)}")
+    optimizer = AdamW(trainable_params, lr=cfg.learning_rate)
     original_lr = optimizer.param_groups[0]["lr"]
     scheduler = MultiStepLR(optimizer, milestones=[cfg.num_steps_before_decay], gamma=0.1)
 
@@ -864,10 +855,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             normalized_loss = loss_total / cfg.grad_accumulation_steps
             normalized_loss.backward()
 
-            # Optimizer step (PI-style: clip gradients before step)
+            # Optimizer step
             if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
-                all_params = decay_params + no_decay_params
-                torch.nn.utils.clip_grad_norm_(all_params, max_norm=10.0)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
@@ -965,6 +954,14 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         save_teacher_snapshot(vla.module, action_head.module if action_head is not None else None, final_dir, cfg.max_steps)
         save_dataset_statistics(train_dataset.dataset_statistics, final_dir)
         print(f"Final checkpoint saved → {final_dir}")
+
+    # Save per-task snapshot (for task isolation during evaluation)
+    if cfg.use_cl_lora and distributed_state.is_main_process:
+        save_task_snapshot(
+            vla.module,
+            action_head.module if action_head is not None else None,
+            str(final_dir), cfg.stage,
+        )
 
     dist.barrier()
     print("CL-LoRA training complete.")

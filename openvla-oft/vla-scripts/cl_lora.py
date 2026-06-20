@@ -73,9 +73,8 @@ class CLLoRALinear(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        # principle 3: ALL layers use orthogonal init for A when enabled
-        # (shared layers protect old subspaces; specific layers start from structured bases)
-        if self._orthogonal_init:
+        # principle 3: shared layers use orthogonal init for A
+        if self.is_shared and self._orthogonal_init:
             nn.init.orthogonal_(self.lora_a)
         else:
             nn.init.kaiming_uniform_(self.lora_a, a=math.sqrt(5))
@@ -167,3 +166,93 @@ def inject_cl_lora_into_model(
     print(f"Replaced {replaced_count} Linear layers with CLLoRALinear.")
     print(f"(Expected: {total_depth} layers × 7 modules = {total_depth * 7})\n")
     return model
+
+
+# ==============================================================================
+# Task-specific parameter isolation (CL-LoRA paper: per-task block_scale + shared B)
+# ==============================================================================
+
+def save_task_snapshot(model, action_head, save_path: str, stage: int) -> None:
+    """Save per-task parameters that should NOT be overwritten by subsequent tasks.
+
+    Saves: shared LoRA-B (layers < shared_depth), block_scale, specific A/B, action_head.
+    These are restored during evaluation to test old-task performance.
+    """
+    import os
+
+    snapshot = {}
+    # 1. Shared-layer LoRA-B: layers where CLLoRALinear.is_shared == True
+    # 2. Specific-layer LoRA-A, LoRA-B: layers where is_shared == False
+    # 3. block_scale: all specific layers
+    # 4. Action head
+    for name, module in model.named_modules():
+        if isinstance(module, CLLoRALinear):
+            layer_key = name.replace('.', '_')
+            if module.is_shared:
+                # Save shared-layer LoRA-B (LoRA-A is frozen, same across tasks)
+                snapshot[f"{layer_key}.lora_b"] = module.lora_b.data.cpu().clone()
+            else:
+                # Save specific-layer LoRA-A + LoRA-B + block_scale
+                snapshot[f"{layer_key}.lora_a"] = module.lora_a.data.cpu().clone()
+                snapshot[f"{layer_key}.lora_b"] = module.lora_b.data.cpu().clone()
+                if module.block_scale is not None:
+                    snapshot[f"{layer_key}.block_scale"] = module.block_scale.data.cpu().clone()
+
+    if action_head is not None:
+        for name, param in action_head.state_dict().items():
+            snapshot[f"action_head.{name}"] = param.cpu().clone()
+
+    os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else '.', exist_ok=True)
+    task_path = f"{save_path}/task_{stage}_snapshot.pt" if os.path.isdir(save_path) else save_path
+    torch.save(snapshot, task_path)
+    print(f"[TaskSnapshot] Saved stage {stage} params ({len(snapshot)} tensors) → {task_path}")
+
+
+def load_task_snapshot(model, action_head, snapshot_path: str) -> None:
+    """Load per-task parameters for evaluation."""
+    snapshot = torch.load(snapshot_path, map_location='cpu', weights_only=True)
+
+    for name, module in model.named_modules():
+        if isinstance(module, CLLoRALinear):
+            layer_key = name.replace('.', '_')
+            for suffix in ['lora_a', 'lora_b', 'block_scale']:
+                key = f"{layer_key}.{suffix}"
+                if key in snapshot:
+                    target = getattr(module, suffix, None)
+                    if target is not None:
+                        target.data.copy_(snapshot[key].to(target.device))
+
+    if action_head is not None:
+        ah_state = {k.replace('action_head.', ''): v
+                    for k, v in snapshot.items() if k.startswith('action_head.')}
+        if ah_state:
+            # Handle DDP prefix if present
+            current_keys = set(action_head.state_dict().keys())
+            if not set(ah_state.keys()).intersection(current_keys):
+                # Try stripping 'module.' prefix
+                ah_state = {k.replace('module.', ''): v for k, v in ah_state.items()}
+            action_head.load_state_dict(ah_state, strict=False)
+            print(f"[TaskSnapshot] Loaded action_head from snapshot")
+
+
+def reinit_task_specific_for_new_stage(model, shared_depth: int) -> None:
+    """Reinitialize task-specific parameters for a new training stage.
+
+    Shared-layer LoRA-B → zero (fresh start for new task)
+    Specific-layer LoRA-A → kept (transfer from previous)
+    Specific-layer LoRA-B → kept (transfer from previous)
+    block_scale (specific layers) → zero (fresh gate for new task)
+    """
+    for name, module in model.named_modules():
+        if isinstance(module, CLLoRALinear):
+            if module.is_shared:
+                # Shared layers: reinit B to zero, A stays frozen (same across tasks)
+                nn.init.zeros_(module.lora_b)
+            else:
+                # Specific layers: reinit block_scale to zero for new task
+                if module.block_scale is not None:
+                    nn.init.zeros_(module.block_scale)
+                # A and B keep their values from previous stage (transfer learning)
+
+    print(f"[TaskInit] Reinitialized shared LoRA-B + block_scale for new stage "
+          f"(shared_depth={shared_depth})")
