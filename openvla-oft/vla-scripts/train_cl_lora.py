@@ -920,6 +920,15 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                     # Save dataset statistics
                     save_dataset_statistics(train_dataset.dataset_statistics, checkpoint_dir)
 
+                    # Save task snapshot + copy old ones forward
+                    if cfg.use_cl_lora:
+                        if cfg.previous_checkpoint_dir is not None:
+                            import glob as _g; import shutil as _sh
+                            for s in _g.glob(os.path.join(cfg.previous_checkpoint_dir, "task_*_snapshot.pt")):
+                                _sh.copy(s, str(checkpoint_dir))
+                        save_task_snapshot(vla.module, action_head.module if action_head is not None else None,
+                                           str(checkpoint_dir), cfg.stage)
+
                     print(f"Checkpoint saved at step {log_step} → {checkpoint_dir}")
 
                 dist.barrier()
@@ -955,8 +964,16 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         save_dataset_statistics(train_dataset.dataset_statistics, final_dir)
         print(f"Final checkpoint saved → {final_dir}")
 
-    # Save per-task snapshot (for task isolation during evaluation)
+    # Save per-task snapshot + copy old snapshots forward (for task isolation during evaluation)
     if cfg.use_cl_lora and distributed_state.is_main_process:
+        # Copy old task snapshots from previous checkpoint so latest dir has all tasks
+        if cfg.previous_checkpoint_dir is not None:
+            import glob as _glob
+            for old_snap in _glob.glob(os.path.join(cfg.previous_checkpoint_dir, "task_*_snapshot.pt")):
+                import shutil as _shutil
+                _shutil.copy(old_snap, str(final_dir))
+                print(f"[TaskSnapshot] Copied {os.path.basename(old_snap)} to final checkpoint")
+
         save_task_snapshot(
             vla.module,
             action_head.module if action_head is not None else None,
