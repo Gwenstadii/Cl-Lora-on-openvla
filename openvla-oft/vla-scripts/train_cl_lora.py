@@ -613,24 +613,37 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         print(f"[CL-LoRA] LoRA trainable params after freeze: {lora_trainable:,}")
 
     # ---- Load previous stage checkpoint (sequential training) ----
+    _pending_action_head_state = None
+    _pending_vision_state = None
     if cfg.previous_checkpoint_dir is not None:
         prev_dir = cfg.previous_checkpoint_dir
         prev_step = cfg.previous_checkpoint_step or cfg.max_steps
         print(f"[Stage {cfg.stage}] Loading previous checkpoint from {prev_dir} (step {prev_step})")
+
+        # ---- CRITICAL: Load CL-LoRA adapter from previous stage ----
+        adapter_path = os.path.join(prev_dir, "cl_lora_adapter.pt")
+        if os.path.exists(adapter_path):
+            print(f"[Stage {cfg.stage}] Loading CL-LoRA adapter from {adapter_path}")
+            prev_adapter = torch.load(adapter_path, map_location="cpu")
+            # Apply freeze filter AFTER loading
+            missing, unexpected = vla.load_state_dict(prev_adapter, strict=False)
+            if missing:
+                print(f"[Stage {cfg.stage}]   Missing keys in adapter: {len(missing)}")
+            if unexpected:
+                print(f"[Stage {cfg.stage}]   Unexpected keys in adapter: {len(unexpected)}")
+            print(f"[Stage {cfg.stage}] CL-LoRA adapter loaded successfully")
+        else:
+            raise FileNotFoundError(
+                f"previous_checkpoint_dir specified but cl_lora_adapter.pt not found in {prev_dir}. "
+                "Make sure the previous stage checkpoint is complete."
+            )
+
         # Load action_head
         if cfg.use_l1_regression or cfg.use_diffusion:
-            ah_state = load_checkpoint("action_head", prev_dir, prev_step)
-            # action_head not yet created; will load after init
-            _pending_action_head_state = ah_state
-        else:
-            _pending_action_head_state = None
-        # Load vision_backbone if FiLM
-        _pending_vision_state = None
+            _pending_action_head_state = load_checkpoint("action_head", prev_dir, prev_step)
+        # Load vision_backbone (only if FiLM)
         if cfg.use_film:
             _pending_vision_state = load_checkpoint("vision_backbone", prev_dir, prev_step)
-    else:
-        _pending_action_head_state = None
-        _pending_vision_state = None
 
     # ---- FiLM ----
     if cfg.use_film:
@@ -854,7 +867,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             # Optimizer step (PI-style: clip gradients before step)
             if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
                 all_params = decay_params + no_decay_params
-                torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(all_params, max_norm=10.0)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()

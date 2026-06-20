@@ -1144,7 +1144,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             # Optimizer and LR scheduler step (PI-style: clip gradients)
             if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
                 all_params = decay_params + no_decay_params
-                torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(all_params, max_norm=10.0)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
