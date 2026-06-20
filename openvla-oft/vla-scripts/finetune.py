@@ -963,16 +963,26 @@ def finetune(cfg: FinetuneConfig) -> None:
     if cfg.use_diffusion:
         NUM_PATCHES += 1
 
-    # Instantiate optimizer
-    trainable_params = [param for param in vla.parameters() if param.requires_grad]
-    if cfg.use_l1_regression or cfg.use_diffusion:
-        trainable_params += [param for param in action_head.parameters() if param.requires_grad]
-    if cfg.use_diffusion:
-        trainable_params += [param for param in noisy_action_projector.parameters() if param.requires_grad]
-    if cfg.use_proprio:
-        trainable_params += [param for param in proprio_projector.parameters() if param.requires_grad]
-    print(f"# total trainable params: {sum(p.numel() for p in trainable_params)}")
-    optimizer = AdamW(trainable_params, lr=cfg.learning_rate)
+    # Instantiate optimizer (PI-style: no weight decay on lora_a / block_scale)
+    decay_params, no_decay_params = [], []
+    for n, p in vla.named_parameters():
+        if not p.requires_grad:
+            continue
+        if any(x in n for x in ['lora_a', 'block_scale']):
+            no_decay_params.append(p)
+        else:
+            decay_params.append(p)
+    for extra in [action_head, noisy_action_projector, proprio_projector]:
+        if extra is not None:
+            for p in extra.parameters():
+                if p.requires_grad:
+                    decay_params.append(p)
+    total_trainable = sum(p.numel() for p in decay_params + no_decay_params)
+    print(f"# total trainable params: {total_trainable:,} (wd={sum(p.numel() for p in decay_params):,}, no_wd={sum(p.numel() for p in no_decay_params):,})")
+    optimizer = AdamW([
+        {'params': decay_params, 'weight_decay': 0.01},
+        {'params': no_decay_params, 'weight_decay': 0.0},
+    ], lr=cfg.learning_rate)
 
     # Record original learning rate
     original_lr = optimizer.param_groups[0]["lr"]
@@ -1131,8 +1141,10 @@ def finetune(cfg: FinetuneConfig) -> None:
                     step=log_step,
                 )
 
-            # Optimizer and LR scheduler step
+            # Optimizer and LR scheduler step (PI-style: clip gradients)
             if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
+                all_params = decay_params + no_decay_params
+                torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()

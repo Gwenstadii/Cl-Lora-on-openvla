@@ -1,17 +1,17 @@
 """
 CL-LoRA module for continual learning on OpenVLA.
 
-Implements CL-LoRA as described in:
-  "CL-LoRA: Continual Low-Rank Adaptation for Rehearsal-Free Class-Incremental Learning"
-  He, Duan, Zhu — CVPR 2025
+Injects CLLoRALinear ONLY into LlamaDecoderLayer's attention (q/k/v/o_proj)
+and FFN (gate/up/down_proj) — matching PI's "attn" + "ffn" scope.
 
-Key design (Section 4):
-  1. Task-SHARED adapters in first l blocks: B (down-proj) = fixed random orthogonal,
-     A (up-proj) = zero-init + trainable. B frozen, A continuously updated.
-  2. Task-SPECIFIC adapters in remaining N-l blocks: standard LoRA (A/B both
-     trainable) with learnable block-wise scaling weights mu_t^i (per module).
-  3. Orthogonality loss L_orth between block weight vectors of different tasks.
-  4. Visual backbone and LLM base weights fully frozen.
+Design principles (from PI):
+  1. FREEZE visual encoder (SigLIP) — NO LoRA, stable features across tasks
+  2. FREEZE LLM backbone weights — only LoRA adapter params are trainable
+  3. Shared layers: LoRA-A orthogonal init + frozen (anti-forgetting)
+  4. Specific layers: LoRA-A/B trainable + block-scale gating
+  5. Lightweight action head only
+
+Reference: PI0.5 CL-LoRA (openpi/models/lora.py, openpi/models/gemma.py)
 """
 
 import math
@@ -21,18 +21,12 @@ import torch.nn.functional as F
 
 
 class CLLoRALinear(nn.Module):
-    """CL-LoRA linear layer. Replaces nn.Linear in transformer blocks.
+    """Continual-Learning LoRA linear layer.
 
-    Shared layers (paper Eq.6):
-      B(lora_a, down-proj) = fixed random orthogonal, NOT trained
-      A(lora_b, up-proj)   = zero-init, TRAINABLE
+    Shared layers: LoRA-A orthogonally initialized and frozen (protects old knowledge).
+    Specific layers: LoRA-A and LoRA-B both trainable, with learnable block_scale gating.
 
-    Specific layers (paper Eq.5, 11):
-      A(lora_a, down-proj) = kaiming init, trainable
-      B(lora_b, up-proj)   = zero-init, trainable
-      scaled by learnable block_scale mu (per module)
-
-    Forward:  result = Wx + scaling * mu * lora_b @ lora_a @ x
+    Forward:  result = Wx + scaling * block_scale_gate * B @ A @ x
     """
 
     def __init__(
@@ -53,7 +47,7 @@ class CLLoRALinear(nn.Module):
         self.scaling = alpha / rank
         self.is_shared = is_shared
 
-        # Freeze base weight
+        # Freeze base weight (principle 2: frozen LLM backbone)
         self.weight = base_layer.weight
         self.weight.requires_grad = False
         if base_layer.bias is not None:
@@ -62,29 +56,29 @@ class CLLoRALinear(nn.Module):
         else:
             self.register_parameter('bias', None)
 
-        # LoRA A (down-proj) and B (up-proj)
+        # LoRA A and B matrices
         self.lora_a = nn.Parameter(torch.zeros(rank, self.in_features))
         self.lora_b = nn.Parameter(torch.zeros(self.out_features, rank))
         self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
 
-        # Per-module learnable block_scale (specific layers only)
+        # Block-scale gating (specific layers only, principle 4)
         if not self.is_shared and use_block_scale:
             self.block_scale = nn.Parameter(torch.tensor(0.0))
         else:
             self.register_parameter('block_scale', None)
 
         self._orthogonal_init = orthogonal_init
-        self._freeze_a = freeze_a and is_shared
+        self._freeze_a = freeze_a and is_shared  # principle 3: only shared layers freeze A
+        self._use_block_scale = use_block_scale
         self.reset_parameters()
 
     def reset_parameters(self):
-        # Paper Eq.6: shared B(down=our lora_a) = random orthogonal, frozen
-        # Paper Eq.5: specific A(down=our lora_a) = standard random init, trainable
-        if self.is_shared and self._orthogonal_init:
+        # principle 3: ALL layers use orthogonal init for A when enabled
+        # (shared layers protect old subspaces; specific layers start from structured bases)
+        if self._orthogonal_init:
             nn.init.orthogonal_(self.lora_a)
         else:
             nn.init.kaiming_uniform_(self.lora_a, a=math.sqrt(5))
-        # Up-projection (our lora_b): always zero-init
         nn.init.zeros_(self.lora_b)
 
         if self._freeze_a:
@@ -103,12 +97,6 @@ class CLLoRALinear(nn.Module):
 
         return result + lora_out * scale
 
-    def collect_block_scale(self):
-        """Return block_scale value for L_orth computation (paper Eq.12)."""
-        if self.block_scale is not None:
-            return self.block_scale.detach().clone()
-        return None
-
 
 def inject_cl_lora_into_model(
     model,
@@ -119,17 +107,17 @@ def inject_cl_lora_into_model(
     orthogonal_init: bool = True,
     freeze_a: bool = True,
     use_block_scale: bool = True,
-    target_modules: list = None,
 ):
-    """Inject CL-LoRA into LlamaDecoderLayer transformer blocks.
+    """Inject CL-LoRA into LlamaDecoderLayer attention + FFN linear layers ONLY.
 
-    Block weights: per-module learnable scalar inside each CLLoRALinear (mu_t^i).
-    L_orth uses the average block_scale per specific layer.
+    Matches PI's injection scope exactly:
+      - attn → q_proj, k_proj, v_proj, o_proj
+      - ffn  → gate_proj, up_proj, down_proj
+
+    Visual backbone, lm_head, projector, and all other Linear layers are LEFT UNTOUCHED.
+    (principle 1: frozen visual encoder)
     """
-    if target_modules is None:
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                          "gate_proj", "up_proj", "down_proj"]
-
+    # Step 1: discover LlamaDecoderLayer depth ordering
     llama_layers = []
     for name, module in model.named_modules():
         if module.__class__.__name__ == "LlamaDecoderLayer":
@@ -137,20 +125,19 @@ def inject_cl_lora_into_model(
 
     total_depth = len(llama_layers)
     if total_depth == 0:
-        raise RuntimeError("No LlamaDecoderLayer found in model.")
-
+        raise RuntimeError("No LlamaDecoderLayer found in model. Check model architecture.")
     shared_depth_count = max(1, int(total_depth * shared_split_ratio))
-    specific_depth_count = total_depth - shared_depth_count
 
-    print(f"\n--- Injecting CL-LoRA (per-module block_scale, PI scope) ---")
+    print(f"\n--- Injecting CL-LoRA (PI scope: decoder attn + ffn only) ---")
     print(f"LlamaDecoderLayer depth: {total_depth}")
-    print(f"Shared layers (fixed B, train A):  0 to {shared_depth_count - 1}")
-    print(f"Specific layers (both train, +mu): {shared_depth_count} to {total_depth - 1}")
-    print(f"Target modules:                     {target_modules}")
-    print(f"Vision backbone:                    UNTOUCHED (frozen)\n")
+    print(f"Shared layers (frozen A):    0 to {shared_depth_count - 1}")
+    print(f"Specific layers (learnable):  {shared_depth_count} to {total_depth - 1}")
+    print(f"Vision backbone:              UNTOUCHED (frozen)")
+    print(f"lm_head / projector:          UNTOUCHED (frozen)\n")
 
-    replaced_shared = 0
-    replaced_specific = 0
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
+                      "gate_proj", "up_proj", "down_proj"]
+    replaced_count = 0
 
     for layer_idx, (layer_name, layer_module) in enumerate(llama_layers):
         is_shared = layer_idx < shared_depth_count
@@ -175,11 +162,8 @@ def inject_cl_lora_into_model(
                 ).to(module.weight.device).to(module.weight.dtype)
 
                 setattr(parent_module, child_name, cl_lora_layer)
-                if is_shared:
-                    replaced_shared += 1
-                else:
-                    replaced_specific += 1
+                replaced_count += 1
 
-    print(f"Replaced {replaced_shared} shared + {replaced_specific} specific = "
-          f"{replaced_shared + replaced_specific} Linear layers with CLLoRALinear.\n")
+    print(f"Replaced {replaced_count} Linear layers with CLLoRALinear.")
+    print(f"(Expected: {total_depth} layers × 7 modules = {total_depth * 7})\n")
     return model

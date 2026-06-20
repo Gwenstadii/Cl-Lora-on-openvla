@@ -52,15 +52,14 @@ cd /root/openvla-oft
   A8  合并 dataset_statistics.json → 评估 Task A+B+C+D  ← 分支①全部完成
 
 ═══ 分支②：CL-LoRA + no replay ═══════════════════════════════════════
-  （CL-LoRA CVPR 2025 paper-aligned: per-layer block weights + L_orth）
 
-  B1  训练 Task A                           train_cl_lora.py（无 L_orth）
+  B1  训练 Task A                           train_cl_lora.py（--use_kd False --use_replay False）
   B2  评估 Task A
-  B3  训练 Task B（--orth_previous_block_weight_dirs 指向 B1, 启用 L_orth）
+  B3  训练 Task B（--previous_checkpoint_dir 指向 B1，--use_kd False --use_replay False）
   B4  评估 Task A + B
-  B5  训练 Task C（--orth_previous_block_weight_dirs 指向 B1+B3, 切换数据集）
+  B5  训练 Task C（--previous_checkpoint_dir 指向 B3，切换数据集）
   B6  合并 dataset_statistics.json → 评估 Task A+B+C
-  B7  训练 Task D（--orth_previous_block_weight_dirs 指向 B1+B3+B5, 切换数据集）
+  B7  训练 Task D（--previous_checkpoint_dir 指向 B5，切换数据集）
   B8  合并 dataset_statistics.json → 评估 Task A+B+C+D  ← 分支②全部完成
 
 ═══ 分支③：CL-LoRA + Prototype Replay ════════════════════════════════
@@ -199,7 +198,7 @@ cd /root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft
 WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl_lora.py \
   --vla_path $VLA_PATH --data_root_dir $DATA_ROOT \
   --dataset_name "libero_spatial_no_noops" \
-  --run_id_override "cl_lora_paper_taskA" \
+  --run_id_override "cl_lora_taskA" \
   --batch_size 1 --grad_accumulation_steps 8 --learning_rate 5e-4 \
   --lr_warmup_steps 200 --num_steps_before_decay 100000 \
   --use_cl_lora True --lora_rank 16 \
@@ -293,7 +292,7 @@ TASK_A_CL_CKPT="$LOGS_ROOT/cl_lora_taskA_2k--2000_chkpt"                # 分支
 
 ```bash
 WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/finetune.py \
-  --vla_path $PAPER_TASKA_CKPT \
+  --vla_path $TASK_A_CKPT \
   --data_root_dir $DATA_ROOT \
   --dataset_name "libero_spatial_no_noops" \
   --run_id_override "task_b_cl_10k_from_90" \
@@ -324,7 +323,7 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl
   --use_cl_lora True --lora_rank 16 \
   --shared_depth 8 --orthogonal_init True --freeze_a True --use_block_scale True \
   --use_kd False --use_replay False --stage 2 \
-  --previous_checkpoint_dir $PAPER_TASKA_CKPT --previous_checkpoint_step 6000 \
+  --previous_checkpoint_dir $TASK_A_CKPT --previous_checkpoint_step 6000 \
   --max_steps 6000 --save_freq 2000 --image_aug True \
   --run_root_dir $LOGS_ROOT
 ```
@@ -349,7 +348,7 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl
   --use_replay True --replay_buffer_dirs $PROTO_BUFFER \
   --replay_loss_weight 1.0 --replay_every_n_steps 1 \
   --stage 2 \
-  --previous_checkpoint_dir $PAPER_TASKA_CKPT --previous_checkpoint_step 6000 \
+  --previous_checkpoint_dir $TASK_A_CKPT --previous_checkpoint_step 6000 \
   --max_steps 4000 --save_freq 1000 --image_aug True \
   --run_root_dir $LOGS_ROOT
 ```
@@ -372,7 +371,7 @@ WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl
   --use_replay True --replay_buffer_dirs $UNIFORM_BUFFER \
   --replay_loss_weight 1.0 --replay_every_n_steps 1 \
   --stage 2 \
-  --previous_checkpoint_dir $PAPER_TASKA_CKPT --previous_checkpoint_step 6000 \
+  --previous_checkpoint_dir $TASK_A_CKPT --previous_checkpoint_step 6000 \
   --max_steps 4000 --save_freq 1000 --image_aug True \
   --run_root_dir $LOGS_ROOT
 ```

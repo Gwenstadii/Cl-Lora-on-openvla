@@ -122,13 +122,6 @@ class TrainCLConfig:
     teacher_checkpoint_dir: Optional[str] = None
     teacher_checkpoint_step: Optional[int] = None
 
-    # ---- Paper: Orthogonality loss between block weights (Section 4.3, Eq.12) ----
-    lambda_orth: float = 0.0001                     # Weight for L_orth between block weight vectors
-    orth_previous_block_weight_dirs: List[str] = field(default_factory=list)  # Previous stage checkpoints for block weight loading
-
-    # ---- Injection scope (paper: Wq, Wv only) ----
-    cl_target_modules: List[str] = field(default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
-
     # ---- Replay ----
     use_replay: bool = False
     replay_buffer_dirs: List[str] = field(default_factory=list)
@@ -515,103 +508,6 @@ def compute_smoothened_metrics(metrics_deques: dict) -> dict:
     return smoothened
 
 
-def _extract_block_weights_from_ckpt(ckpt_dir: str) -> Optional[torch.Tensor]:
-    """Extract per-layer averaged block_scale from an existing v5 checkpoint's cl_lora_adapter.pt.
-
-    v5 checkpoints don't have block_weights.pt; this function reconstructs them from the adapter.
-    Returns a 1D tensor of shape (n_specific_layers,) or None.
-    """
-    adapter_path = os.path.join(ckpt_dir, "cl_lora_adapter.pt")
-    if not os.path.exists(adapter_path):
-        print(f"[BlockWeight] No adapter found at {adapter_path}")
-        return None
-
-    adapter = torch.load(adapter_path, map_location="cpu")
-    layer_weights = {}
-    for key, val in adapter.items():
-        if 'block_scale' in key:
-            # Extract layer index from key like "...layers.15.self_attn.q_proj.block_scale"
-            parts = key.split('.')
-            for i, p in enumerate(parts):
-                if p == 'layers' and i + 1 < len(parts):
-                    try:
-                        layer_idx = int(parts[i + 1])
-                        if layer_idx not in layer_weights:
-                            layer_weights[layer_idx] = []
-                        layer_weights[layer_idx].append(val.item())
-                    except ValueError:
-                        pass
-
-    if not layer_weights:
-        return None
-
-    # Average block_scale across all modules in each specific layer
-    result = []
-    for idx in sorted(layer_weights.keys()):
-        avg = sum(layer_weights[idx]) / len(layer_weights[idx])
-        result.append(avg)
-    return torch.tensor(result)
-
-
-def _collect_block_weight_vector(vla, detach: bool = False) -> Optional[torch.Tensor]:
-    """Collect per-layer block_scale vector mu_t for L_orth (paper Section 4.3).
-
-    Averages block_scale across all modules in each specific LlamaDecoderLayer.
-    Returns a 1D tensor of shape (n_specific_layers,), or None if no block weights exist.
-    """
-    weights = []
-    for name, module in vla.named_modules():
-        if module.__class__.__name__ == "LlamaDecoderLayer":
-            bw_list = []
-            for n2, m2 in module.named_modules():
-                if hasattr(m2, 'block_scale') and m2.block_scale is not None:
-                    w = m2.block_scale
-                    bw_list.append(w.detach().clone() if detach else w)
-            if bw_list:
-                avg = torch.stack(bw_list).mean(dim=0)
-                weights.append(avg)
-    if not weights:
-        return None
-    return torch.stack(weights)
-
-
-def _compute_orthogonality_loss(
-    current_weights: torch.Tensor,
-    cfg,
-) -> torch.Tensor:
-    """Compute L_orth between current and previous block weight vectors (paper Eq.12).
-
-    L_orth = sum_{prev} |U_current · U_prev|  (dot product of block weight vectors)
-
-    Penalizes similarity between block weight vectors of different tasks,
-    encouraging them to use different transformer blocks and reducing interference.
-    """
-    loss_orth = torch.tensor(0.0, device=current_weights.device)
-    if not cfg.orth_previous_block_weight_dirs:
-        return loss_orth
-
-    U_current = current_weights / (current_weights.norm() + 1e-8)
-
-    for prev_dir in cfg.orth_previous_block_weight_dirs:
-        prev_path = os.path.join(prev_dir, "block_weights.pt")
-        if os.path.exists(prev_path):
-            U_prev = torch.load(prev_path, map_location=current_weights.device)
-        else:
-            # v5 checkpoint: extract from cl_lora_adapter.pt and save for future use
-            U_prev = _extract_block_weights_from_ckpt(prev_dir)
-            if U_prev is None:
-                print(f"[L_orth] Cannot load block weights from: {prev_dir}")
-                continue
-            torch.save(U_prev, prev_path)
-            print(f"[L_orth] Extracted and saved block weights from {prev_dir}")
-        U_prev = U_prev.to(current_weights.device) / (U_prev.norm() + 1e-8)
-        # Dot product: larger = more similar block usage = more interference
-        dot = torch.abs(torch.dot(U_current, U_prev))
-        loss_orth = loss_orth + dot
-
-    return loss_orth
-
-
 def log_metrics_to_wandb(metrics: dict, prefix: str, step: int, wandb_run) -> None:
     log_dict = {}
     for name, value in metrics.items():
@@ -694,10 +590,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             orthogonal_init=cfg.orthogonal_init,
             freeze_a=cfg.freeze_a,
             use_block_scale=cfg.use_block_scale,
-            target_modules=cfg.cl_target_modules,
         )
-        print(f"[CL-LoRA] Injected with shared_depth={cfg.shared_depth}, rank={cfg.lora_rank}, "
-              f"modules={cfg.cl_target_modules}")
+        print(f"[CL-LoRA] Injected with shared_depth={cfg.shared_depth}, rank={cfg.lora_rank}")
 
         # ---- PI 冻结原则：冻结所有主干，仅保留 LoRA + action_head 可训 ----
         # Freeze ALL parameters first, then selectively unfreeze LoRA params
@@ -799,12 +693,27 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     if cfg.use_diffusion:
         NUM_PATCHES += 1
 
-    # ---- Optimizer ----
-    trainable_params = [p for p in vla.parameters() if p.requires_grad]
+    # ---- Optimizer (PI-style: no weight decay on lora_a / block_scale) ----
+    decay_params, no_decay_params = [], []
+    for n, p in vla.named_parameters():
+        if not p.requires_grad:
+            continue
+        if any(x in n for x in ['lora_a', 'block_scale']):
+            no_decay_params.append(p)
+        else:
+            decay_params.append(p)
     if action_head is not None:
-        trainable_params += [p for p in action_head.parameters() if p.requires_grad]
-    print(f"# total trainable params: {sum(p.numel() for p in trainable_params)}")
-    optimizer = AdamW(trainable_params, lr=cfg.learning_rate)
+        for n, p in action_head.named_parameters():
+            if p.requires_grad:
+                decay_params.append(p)
+    total_trainable = sum(p.numel() for p in decay_params + no_decay_params)
+    print(f"# total trainable params: {total_trainable:,}")
+    print(f"  with weight decay: {sum(p.numel() for p in decay_params):,}")
+    print(f"  no weight decay:   {sum(p.numel() for p in no_decay_params):,}")
+    optimizer = AdamW([
+        {'params': decay_params, 'weight_decay': 0.01},
+        {'params': no_decay_params, 'weight_decay': 0.0},
+    ], lr=cfg.learning_rate)
     original_lr = optimizer.param_groups[0]["lr"]
     scheduler = MultiStepLR(optimizer, milestones=[cfg.num_steps_before_decay], gamma=0.1)
 
@@ -928,24 +837,12 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                     )
                     metrics["loss_replay"] = loss_replay.item()
 
-            # 4. Orthogonality loss (paper Eq.12, Section 4.3)
-            loss_orth = torch.tensor(0.0, device=device_id)
-            if cfg.lambda_orth > 0 and cfg.use_block_scale and len(cfg.orth_previous_block_weight_dirs) > 0:
-                block_weights = _collect_block_weight_vector(vla.module, detach=False)
-                if block_weights is not None:
-                    loss_orth = _compute_orthogonality_loss(block_weights, cfg)
-            metrics["loss_orth"] = loss_orth.item() if isinstance(loss_orth, torch.Tensor) else 0.0
-
-            # 5. Total loss
-            loss_total = (loss_task + cfg.lambda_kd * loss_kd
-                          + cfg.replay_loss_weight * loss_replay
-                          + cfg.lambda_orth * loss_orth)
+            # 4. Total loss
+            loss_total = loss_task + cfg.lambda_kd * loss_kd + cfg.replay_loss_weight * loss_replay
 
             # Store metrics
             metrics["loss_task"] = loss_task.item()
             metrics["loss_kd"] = loss_kd.item() if isinstance(loss_kd, torch.Tensor) else loss_kd
-            if "loss_orth" not in metrics:
-                metrics["loss_orth"] = 0.0
             for name in recent_metrics:
                 if name in metrics:
                     recent_metrics[name].append(metrics[name])
@@ -954,8 +851,10 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             normalized_loss = loss_total / cfg.grad_accumulation_steps
             normalized_loss.backward()
 
-            # Optimizer step
+            # Optimizer step (PI-style: clip gradients before step)
             if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
+                all_params = decay_params + no_decay_params
+                torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
@@ -1001,13 +900,12 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                         "orthogonal_init": cfg.orthogonal_init,
                         "freeze_a": cfg.freeze_a,
                         "use_block_scale": cfg.use_block_scale,
-                        "target_modules": cfg.cl_target_modules,
                     }
                     with open(checkpoint_dir / "cl_lora_config.json", "w") as _f:
                         _json.dump(cl_config, _f)
 
                     # Save CL-LoRA adapter (trainable params only)
-                    cl_lora_state = {k: v.cpu() for k, v in vla.module.state_dict().items() if any(x in k for x in ['lora_a', 'lora_b', 'block_scale', 'cl_block_weight'])}
+                    cl_lora_state = {k: v.cpu() for k, v in vla.module.state_dict().items() if any(x in k for x in ['lora_a', 'lora_b', 'block_scale'])}
                     torch.save(cl_lora_state, checkpoint_dir / "cl_lora_adapter.pt")
 
                     # Save action head
@@ -1016,11 +914,6 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
 
                     # Save teacher snapshot (for next stage)
                     save_teacher_snapshot(vla.module, action_head.module if action_head is not None else None, checkpoint_dir, log_step)
-
-                    # Save block weights for L_orth in next stages (paper Eq.12)
-                    bw = _collect_block_weight_vector(vla.module, detach=True)
-                    if bw is not None:
-                        torch.save(bw, checkpoint_dir / "block_weights.pt")
 
                     # Save dataset statistics
                     save_dataset_statistics(train_dataset.dataset_statistics, checkpoint_dir)
@@ -1052,14 +945,11 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         with open(final_dir / "cl_lora_config.json", "w") as _f:
             _json.dump(cl_config, _f)
         processor.save_pretrained(final_dir)
-        cl_lora_state = {k: v.cpu() for k, v in vla.module.state_dict().items() if any(x in k for x in ['lora_a', 'lora_b', 'block_scale', 'cl_block_weight'])}
+        cl_lora_state = {k: v.cpu() for k, v in vla.module.state_dict().items() if any(x in k for x in ['lora_a', 'lora_b', 'block_scale'])}
         torch.save(cl_lora_state, final_dir / "cl_lora_adapter.pt")
         if action_head is not None:
             torch.save(action_head.module.state_dict(), final_dir / f"action_head--{cfg.max_steps}_checkpoint.pt")
         save_teacher_snapshot(vla.module, action_head.module if action_head is not None else None, final_dir, cfg.max_steps)
-        bw = _collect_block_weight_vector(vla.module, detach=True)
-        if bw is not None:
-            torch.save(bw, final_dir / "block_weights.pt")
         save_dataset_statistics(train_dataset.dataset_statistics, final_dir)
         print(f"Final checkpoint saved → {final_dir}")
 
