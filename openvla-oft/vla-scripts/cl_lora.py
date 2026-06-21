@@ -173,30 +173,26 @@ def inject_cl_lora_into_model(
 # ==============================================================================
 
 def save_task_snapshot(model, action_head, save_path: str, stage: int) -> None:
-    """Save per-task parameters that should NOT be overwritten by subsequent tasks.
+    """Save ISOLATION parameters only: shared LoRA-B + block_scale + action_head.
 
-    Saves: shared LoRA-B (layers < shared_depth), block_scale, specific A/B, action_head.
-    These are restored during evaluation to test old-task performance.
+    Specific LoRA-A/B are NOT saved — they are shared knowledge and come from
+    the latest checkpoint. This ensures old-task retention comes purely from
+    structural isolation (not from full model cloning).
     """
     import os
 
     snapshot = {}
-    # 1. Shared-layer LoRA-B: layers where CLLoRALinear.is_shared == True
-    # 2. Specific-layer LoRA-A, LoRA-B: layers where is_shared == False
-    # 3. block_scale: all specific layers
-    # 4. Action head
     for name, module in model.named_modules():
         if isinstance(module, CLLoRALinear):
             layer_key = name.replace('.', '_')
             if module.is_shared:
-                # Save shared-layer LoRA-B (LoRA-A is frozen, same across tasks)
+                # Isolation: shared-layer LoRA-B (per-task projection on frozen A)
                 snapshot[f"{layer_key}.lora_b"] = module.lora_b.data.cpu().clone()
             else:
-                # Save specific-layer LoRA-A + LoRA-B + block_scale
-                snapshot[f"{layer_key}.lora_a"] = module.lora_a.data.cpu().clone()
-                snapshot[f"{layer_key}.lora_b"] = module.lora_b.data.cpu().clone()
+                # Isolation: block_scale (per-task gating for specific layers)
                 if module.block_scale is not None:
                     snapshot[f"{layer_key}.block_scale"] = module.block_scale.data.cpu().clone()
+                # SPECIFIC A/B NOT saved — shared knowledge from latest checkpoint
 
     if action_head is not None:
         for name, param in action_head.state_dict().items():
@@ -205,31 +201,36 @@ def save_task_snapshot(model, action_head, save_path: str, stage: int) -> None:
     os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else '.', exist_ok=True)
     task_path = f"{save_path}/task_{stage}_snapshot.pt" if os.path.isdir(save_path) else save_path
     torch.save(snapshot, task_path)
-    print(f"[TaskSnapshot] Saved stage {stage} params ({len(snapshot)} tensors) → {task_path}")
+    print(f"[TaskSnapshot] Saved isolation params for stage {stage} "
+          f"({len(snapshot)} tensors, shared B + block_scale + action_head only) → {task_path}")
 
 
 def load_task_snapshot(model, action_head, snapshot_path: str) -> None:
-    """Load per-task parameters for evaluation."""
+    """Restore ISOLATION parameters for old-task evaluation.
+
+    Only shared LoRA-B + block_scale are restored.
+    Specific LoRA-A/B use latest checkpoint values (shared knowledge).
+    """
     snapshot = torch.load(snapshot_path, map_location='cpu', weights_only=True)
 
     for name, module in model.named_modules():
         if isinstance(module, CLLoRALinear):
             layer_key = name.replace('.', '_')
-            for suffix in ['lora_a', 'lora_b', 'block_scale']:
-                key = f"{layer_key}.{suffix}"
-                if key in snapshot:
-                    target = getattr(module, suffix, None)
-                    if target is not None:
-                        target.data.copy_(snapshot[key].to(target.device))
+            # Restore shared B
+            key = f"{layer_key}.lora_b"
+            if key in snapshot and module.is_shared:
+                module.lora_b.data.copy_(snapshot[key].to(module.lora_b.device))
+            # Restore block_scale
+            key = f"{layer_key}.block_scale"
+            if key in snapshot and not module.is_shared and module.block_scale is not None:
+                module.block_scale.data.copy_(snapshot[key].to(module.block_scale.device))
 
     if action_head is not None:
         ah_state = {k.replace('action_head.', ''): v
                     for k, v in snapshot.items() if k.startswith('action_head.')}
         if ah_state:
-            # Handle DDP prefix if present
             current_keys = set(action_head.state_dict().keys())
             if not set(ah_state.keys()).intersection(current_keys):
-                # Try stripping 'module.' prefix
                 ah_state = {k.replace('module.', ''): v for k, v in ah_state.items()}
             action_head.load_state_dict(ah_state, strict=False)
             print(f"[TaskSnapshot] Loaded action_head from snapshot")
