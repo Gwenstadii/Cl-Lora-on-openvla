@@ -169,91 +169,10 @@ def inject_cl_lora_into_model(
 
 
 # ==============================================================================
-# Task-specific parameter isolation (CL-LoRA paper: per-task block_scale + shared B)
+# CL-LoRA paper: pure structural anti-forgetting (no snapshot, no parameter switching)
 # ==============================================================================
-
-def save_task_snapshot(model, action_head, save_path: str, stage: int) -> None:
-    """Save ISOLATION parameters only: shared LoRA-B + block_scale + action_head.
-
-    Specific LoRA-A/B are NOT saved — they are shared knowledge and come from
-    the latest checkpoint. This ensures old-task retention comes purely from
-    structural isolation (not from full model cloning).
-    """
-    import os
-
-    snapshot = {}
-    for name, module in model.named_modules():
-        if isinstance(module, CLLoRALinear):
-            layer_key = name.replace('.', '_')
-            if module.is_shared:
-                # Isolation: shared-layer LoRA-B (per-task projection on frozen A)
-                snapshot[f"{layer_key}.lora_b"] = module.lora_b.data.cpu().clone()
-            else:
-                # Isolation: block_scale (per-task gating for specific layers)
-                if module.block_scale is not None:
-                    snapshot[f"{layer_key}.block_scale"] = module.block_scale.data.cpu().clone()
-                # SPECIFIC A/B NOT saved — shared knowledge from latest checkpoint
-
-    if action_head is not None:
-        for name, param in action_head.state_dict().items():
-            snapshot[f"action_head.{name}"] = param.cpu().clone()
-
-    os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else '.', exist_ok=True)
-    task_path = f"{save_path}/task_{stage}_snapshot.pt" if os.path.isdir(save_path) else save_path
-    torch.save(snapshot, task_path)
-    print(f"[TaskSnapshot] Saved isolation params for stage {stage} "
-          f"({len(snapshot)} tensors, shared B + block_scale + action_head only) → {task_path}")
-
-
-def load_task_snapshot(model, action_head, snapshot_path: str) -> None:
-    """Restore ISOLATION parameters for old-task evaluation.
-
-    Only shared LoRA-B + block_scale are restored.
-    Specific LoRA-A/B use latest checkpoint values (shared knowledge).
-    """
-    snapshot = torch.load(snapshot_path, map_location='cpu', weights_only=True)
-
-    for name, module in model.named_modules():
-        if isinstance(module, CLLoRALinear):
-            layer_key = name.replace('.', '_')
-            # Restore shared B
-            key = f"{layer_key}.lora_b"
-            if key in snapshot and module.is_shared:
-                module.lora_b.data.copy_(snapshot[key].to(module.lora_b.device))
-            # Restore block_scale
-            key = f"{layer_key}.block_scale"
-            if key in snapshot and not module.is_shared and module.block_scale is not None:
-                module.block_scale.data.copy_(snapshot[key].to(module.block_scale.device))
-
-    if action_head is not None:
-        ah_state = {k.replace('action_head.', ''): v
-                    for k, v in snapshot.items() if k.startswith('action_head.')}
-        if ah_state:
-            current_keys = set(action_head.state_dict().keys())
-            if not set(ah_state.keys()).intersection(current_keys):
-                ah_state = {k.replace('module.', ''): v for k, v in ah_state.items()}
-            action_head.load_state_dict(ah_state, strict=False)
-            print(f"[TaskSnapshot] Loaded action_head from snapshot")
-
-
-def reinit_task_specific_for_new_stage(model, shared_depth: int) -> None:
-    """Reinitialize task-specific parameters for a new training stage.
-
-    Shared-layer LoRA-B → zero (fresh start for new task)
-    Specific-layer LoRA-A → kept (transfer from previous)
-    Specific-layer LoRA-B → kept (transfer from previous)
-    block_scale (specific layers) → zero (fresh gate for new task)
-    """
-    for name, module in model.named_modules():
-        if isinstance(module, CLLoRALinear):
-            if module.is_shared:
-                # Shared layers: reinit B to zero, A stays frozen (same across tasks)
-                nn.init.zeros_(module.lora_b)
-            else:
-                # Specific layers: reinit block_scale to zero for new task
-                if module.block_scale is not None:
-                    nn.init.zeros_(module.block_scale)
-                # A and B keep their values from previous stage (transfer learning)
-
-    print(f"[TaskInit] Reinitialized shared LoRA-B + block_scale for new stage "
-          f"(shared_depth={shared_depth})")
+# The paper's no-replay branch evaluates ALL tasks using the SAME model checkpoint
+# (latest stage). Anti-forgetting comes purely from:
+#   1. Shared-layer orthogonal A + frozen A (stable subspace)
+#   2. Specific-layer block_scale gating 1.0+0.5*tanh(w) (modulated contribution)
+# No per-task parameter snapshots — this is by design to test structural stability.

@@ -321,21 +321,7 @@ def get_vla(cfg: Any) -> torch.nn.Module:
         print("[*] Loading CL-LoRA weights...")
         cl_state_dict = torch.load(cl_lora_path, map_location="cpu")
         vla.load_state_dict(cl_state_dict, strict=False)
-        print("[*] Successfully loaded CL-LoRA weights for evaluation!")
-
-        # Task-specific snapshot: override shared B + block_scale + specific A/B for old task eval
-        eval_task = getattr(cfg, 'eval_task_id', 0) or 0
-        if eval_task > 0:
-            task_snap_path = os.path.join(cfg.pretrained_checkpoint, f"task_{eval_task}_snapshot.pt")
-            if os.path.exists(task_snap_path):
-                sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../vla-scripts'))
-                from cl_lora import load_task_snapshot
-                load_task_snapshot(vla, None, task_snap_path)
-                print(f"[*] Restored task {eval_task} snapshot for evaluation!\n")
-            else:
-                print(f"[!] Task snapshot not found: {task_snap_path}\n")
-        else:
-            print()
+        print("[*] Successfully loaded CL-LoRA weights for evaluation!\n")
 
     if cfg.use_film:
         vla = _apply_film_to_vla(vla, cfg)

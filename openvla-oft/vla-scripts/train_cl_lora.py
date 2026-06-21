@@ -41,9 +41,7 @@ from experiments.robot.openvla_utils import (
     model_is_on_hf_hub,
     update_auto_map,
 )
-from cl_lora import (CLLoRALinear, inject_cl_lora_into_model,
-                      save_task_snapshot, load_task_snapshot,
-                      reinit_task_specific_for_new_stage)
+from cl_lora import CLLoRALinear, inject_cl_lora_into_model
 from replay_dataset import PrototypeReplayDataset
 
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
@@ -645,11 +643,11 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         _pending_action_head_state = None
         _pending_vision_state = None
 
-    # ---- Task isolation: reinit task-specific params for new stage ----
-    # Must happen AFTER loading previous checkpoint (so specific A/B are loaded first,
-    # but shared B and block_scale are reset for the new task)
-    if cfg.use_cl_lora and cfg.stage > 1 and cfg.previous_checkpoint_dir is not None:
-        reinit_task_specific_for_new_stage(vla, cfg.shared_depth)
+    # CL-LoRA paper: no per-task parameter isolation in no-replay branch.
+    # All parameters (shared B, specific A/B, block_scale) continue training
+    # from previous stage checkpoint. Anti-forgetting relies purely on:
+    # shared-layer orthogonal A frozen + specific-layer block_scale gating.
+    # Evaluation uses the SAME model checkpoint for all tasks.
 
     # ---- FiLM ----
     if cfg.use_film:
@@ -920,15 +918,6 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                     # Save dataset statistics
                     save_dataset_statistics(train_dataset.dataset_statistics, checkpoint_dir)
 
-                    # Save task snapshot + copy old ones forward
-                    if cfg.use_cl_lora:
-                        if cfg.previous_checkpoint_dir is not None:
-                            import glob as _g; import shutil as _sh
-                            for s in _g.glob(os.path.join(cfg.previous_checkpoint_dir, "task_*_snapshot.pt")):
-                                _sh.copy(s, str(checkpoint_dir))
-                        save_task_snapshot(vla.module, action_head.module if action_head is not None else None,
-                                           str(checkpoint_dir), cfg.stage)
-
                     print(f"Checkpoint saved at step {log_step} → {checkpoint_dir}")
 
                 dist.barrier()
@@ -963,22 +952,6 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         save_teacher_snapshot(vla.module, action_head.module if action_head is not None else None, final_dir, cfg.max_steps)
         save_dataset_statistics(train_dataset.dataset_statistics, final_dir)
         print(f"Final checkpoint saved → {final_dir}")
-
-    # Save per-task snapshot + copy old snapshots forward (for task isolation during evaluation)
-    if cfg.use_cl_lora and distributed_state.is_main_process:
-        # Copy old task snapshots from previous checkpoint so latest dir has all tasks
-        if cfg.previous_checkpoint_dir is not None:
-            import glob as _glob
-            for old_snap in _glob.glob(os.path.join(cfg.previous_checkpoint_dir, "task_*_snapshot.pt")):
-                import shutil as _shutil
-                _shutil.copy(old_snap, str(final_dir))
-                print(f"[TaskSnapshot] Copied {os.path.basename(old_snap)} to final checkpoint")
-
-        save_task_snapshot(
-            vla.module,
-            action_head.module if action_head is not None else None,
-            str(final_dir), cfg.stage,
-        )
 
     dist.barrier()
     print("CL-LoRA training complete.")
