@@ -321,7 +321,20 @@ def get_vla(cfg: Any) -> torch.nn.Module:
         print("[*] Loading CL-LoRA weights...")
         cl_state_dict = torch.load(cl_lora_path, map_location="cpu")
         vla.load_state_dict(cl_state_dict, strict=False)
-        print("[*] Successfully loaded CL-LoRA weights for evaluation!\n")
+        print("[*] Successfully loaded CL-LoRA weights for evaluation!")
+
+        # PI Task Bank: load per-task specific B + block_scale for old task eval
+        eval_task = getattr(cfg, 'eval_task_id', 0) or 0
+        if eval_task > 0:
+            bank_path = os.path.join(cfg.pretrained_checkpoint, f"task_{eval_task}_bank.pt")
+            if os.path.exists(bank_path):
+                sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../vla-scripts'))
+                from cl_lora import load_task_bank
+                load_task_bank(vla, None, bank_path)
+                print(f"[*] Restored task {eval_task} bank for evaluation!")
+            else:
+                print(f"[!] Task bank not found: {bank_path}")
+        print()
 
     if cfg.use_film:
         vla = _apply_film_to_vla(vla, cfg)

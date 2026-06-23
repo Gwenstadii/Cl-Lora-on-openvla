@@ -169,10 +169,85 @@ def inject_cl_lora_into_model(
 
 
 # ==============================================================================
-# CL-LoRA paper: pure structural anti-forgetting (no snapshot, no parameter switching)
+# PI-Style Task Bank (Stage 1 freeze + per-task specific B / block_scale)
 # ==============================================================================
-# The paper's no-replay branch evaluates ALL tasks using the SAME model checkpoint
-# (latest stage). Anti-forgetting comes purely from:
-#   1. Shared-layer orthogonal A + frozen A (stable subspace)
-#   2. Specific-layer block_scale gating 1.0+0.5*tanh(w) (modulated contribution)
-# No per-task parameter snapshots — this is by design to test structural stability.
+# After Stage 1: shared LoRA-B + specific LoRA-A are FROZEN (shared knowledge).
+# Stage 2+: specific LoRA-B + block_scale + action_head are per-task (bank).
+# During eval, old tasks load their bank to restore task-specific params.
+# This is the PI adaptation of CL-LoRA for VLA models.
+
+
+def freeze_stage1_params(model) -> None:
+    """PI approach: After Stage 1, freeze shared B and specific A.
+
+    - shared LoRA-A: already frozen (orthogonal init + freeze_a)
+    - shared LoRA-B: NOW frozen (shared output knowledge)
+    - specific LoRA-A: NOW frozen (shared input knowledge)
+    - specific LoRA-B + block_scale: stay trainable (banked per task)
+    """
+    frozen = 0
+    for name, module in model.named_modules():
+        if isinstance(module, CLLoRALinear):
+            if module.is_shared:
+                module.lora_b.requires_grad = False
+                frozen += 1
+            else:
+                module.lora_a.requires_grad = False
+                frozen += 1
+    print(f"[TaskBank] Stage 1 freeze: {frozen} layers locked (shared B + specific A)")
+
+
+def reinit_bank_for_new_task(model) -> None:
+    """Before training Stage 2+: reset specific LoRA-B and block_scale to zero.
+
+    Specific B starts fresh so the new task learns its own output mapping.
+    Block_scale starts at identity (effective_scale = 1.0 + 0.5*tanh(0) = 1.0).
+    """
+    for name, module in model.named_modules():
+        if isinstance(module, CLLoRALinear) and not module.is_shared:
+            nn.init.zeros_(module.lora_b)
+            if module.block_scale is not None:
+                nn.init.zeros_(module.block_scale)
+    print("[TaskBank] Reinitialized specific LoRA-B + block_scale for new task")
+
+
+def save_task_bank(model, action_head, bank_dir: str, stage: int) -> None:
+    """Save per-task bank: specific LoRA-B + block_scale + action_head."""
+    import os
+    os.makedirs(str(bank_dir), exist_ok=True)
+    bank = {}
+    for name, module in model.named_modules():
+        if isinstance(module, CLLoRALinear) and not module.is_shared:
+            layer_key = name.replace('.', '_')
+            bank[f"{layer_key}.lora_b"] = module.lora_b.data.cpu().clone()
+            if module.block_scale is not None:
+                bank[f"{layer_key}.block_scale"] = module.block_scale.data.cpu().clone()
+    if action_head is not None:
+        for k, v in action_head.state_dict().items():
+            bank[f"action_head.{k}"] = v.cpu().clone()
+    path = os.path.join(str(bank_dir), f"task_{stage}_bank.pt")
+    torch.save(bank, path)
+    print(f"[TaskBank] Saved stage {stage} bank ({len(bank)} tensors) → {path}")
+
+
+def load_task_bank(model, action_head, bank_path: str) -> None:
+    """Load per-task bank: restore specific LoRA-B + block_scale + action_head."""
+    bank = torch.load(bank_path, map_location='cpu', weights_only=True)
+    for name, module in model.named_modules():
+        if isinstance(module, CLLoRALinear) and not module.is_shared:
+            layer_key = name.replace('.', '_')
+            for suffix in ['lora_b', 'block_scale']:
+                key = f"{layer_key}.{suffix}"
+                if key in bank:
+                    target = getattr(module, suffix, None)
+                    if target is not None:
+                        target.data.copy_(bank[key].to(target.device))
+    if action_head is not None:
+        ah_state = {k.replace('action_head.', ''): v
+                    for k, v in bank.items() if k.startswith('action_head.')}
+        if ah_state:
+            current_keys = set(action_head.state_dict().keys())
+            if not set(ah_state.keys()).intersection(current_keys):
+                ah_state = {k.replace('module.', ''): v for k, v in ah_state.items()}
+            action_head.load_state_dict(ah_state, strict=False)
+            print(f"[TaskBank] Loaded action_head from bank")

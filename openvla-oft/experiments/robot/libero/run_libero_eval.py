@@ -101,6 +101,7 @@ class GenerateConfig:
     num_open_loop_steps: int = 8                     # Number of actions to execute open-loop before requerying policy
 
     lora_rank: int = 32                              # Rank of LoRA weight matrix (MAKE SURE THIS MATCHES TRAINING!)
+    eval_task_id: int = 0                            # (v7 PI bank) Which task bank: 1=A,2=B,3=C. 0=latest.
 
     unnorm_key: Union[str, Path] = ""                # Action un-normalization key
 
@@ -162,6 +163,19 @@ def initialize_model(cfg: GenerateConfig):
     action_head = None
     if cfg.use_l1_regression or cfg.use_diffusion:
         action_head = get_action_head(cfg, model.llm_dim)
+        # PI Task Bank: restore per-task action_head if evaluating old task
+        if hasattr(cfg, 'eval_task_id') and cfg.eval_task_id > 0:
+            bank_path = os.path.join(cfg.pretrained_checkpoint, f"task_{cfg.eval_task_id}_bank.pt")
+            if os.path.exists(bank_path):
+                import torch as _torch
+                bank = _torch.load(bank_path, map_location='cpu', weights_only=True)
+                ah_bank = {k.replace('action_head.', ''): v
+                           for k, v in bank.items() if k.startswith('action_head.')}
+                if ah_bank:
+                    if not set(ah_bank.keys()).intersection(set(action_head.state_dict().keys())):
+                        ah_bank = {k.replace('module.', ''): v for k, v in ah_bank.items()}
+                    action_head.load_state_dict(ah_bank, strict=False)
+                    print(f"[*] Restored action_head from task {cfg.eval_task_id} bank")
 
     # Load noisy action projector if using diffusion
     noisy_action_projector = None

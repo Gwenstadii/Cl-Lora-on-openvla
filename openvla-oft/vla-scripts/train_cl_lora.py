@@ -41,7 +41,9 @@ from experiments.robot.openvla_utils import (
     model_is_on_hf_hub,
     update_auto_map,
 )
-from cl_lora import CLLoRALinear, inject_cl_lora_into_model
+from cl_lora import (CLLoRALinear, inject_cl_lora_into_model,
+                      freeze_stage1_params, reinit_bank_for_new_task,
+                      save_task_bank, load_task_bank)
 from replay_dataset import PrototypeReplayDataset
 
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
@@ -643,11 +645,12 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         _pending_action_head_state = None
         _pending_vision_state = None
 
-    # CL-LoRA paper: no per-task parameter isolation in no-replay branch.
-    # All parameters (shared B, specific A/B, block_scale) continue training
-    # from previous stage checkpoint. Anti-forgetting relies purely on:
-    # shared-layer orthogonal A frozen + specific-layer block_scale gating.
-    # Evaluation uses the SAME model checkpoint for all tasks.
+    # ---- PI Task Bank: freeze shared knowledge, reinit bank for new task ----
+    if cfg.use_cl_lora and cfg.stage > 1 and cfg.previous_checkpoint_dir is not None:
+        freeze_stage1_params(vla)
+        reinit_bank_for_new_task(vla)
+        lora_trainable = sum(p.numel() for p in vla.parameters() if p.requires_grad)
+        print(f"[TaskBank] Stage {cfg.stage} trainable after freeze+reinit: {lora_trainable:,}")
 
     # ---- FiLM ----
     if cfg.use_film:
@@ -918,6 +921,12 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                     # Save dataset statistics
                     save_dataset_statistics(train_dataset.dataset_statistics, checkpoint_dir)
 
+                    # Save task bank for this stage (useful for resumed training)
+                    if cfg.use_cl_lora:
+                        save_task_bank(vla.module,
+                                       action_head.module if action_head is not None else None,
+                                       str(checkpoint_dir), cfg.stage)
+
                     print(f"Checkpoint saved at step {log_step} → {checkpoint_dir}")
 
                 dist.barrier()
@@ -952,6 +961,20 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         save_teacher_snapshot(vla.module, action_head.module if action_head is not None else None, final_dir, cfg.max_steps)
         save_dataset_statistics(train_dataset.dataset_statistics, final_dir)
         print(f"Final checkpoint saved → {final_dir}")
+
+    # PI Task Bank: freeze after Stage 1, save bank each stage, copy old banks forward
+    if cfg.use_cl_lora and distributed_state.is_main_process:
+        if cfg.stage == 1:
+            freeze_stage1_params(vla.module)
+        # Copy old task banks from previous checkpoint
+        if cfg.previous_checkpoint_dir is not None:
+            import glob as _g; import shutil as _sh
+            for old_bank in _g.glob(os.path.join(cfg.previous_checkpoint_dir, "task_*_bank.pt")):
+                _sh.copy(old_bank, str(final_dir))
+        save_task_bank(vla.module,
+                       action_head.module if action_head is not None else None,
+                       str(final_dir), cfg.stage)
+        print(f"[TaskBank] Stage {cfg.stage} bank saved to checkpoint")
 
     dist.barrier()
     print("CL-LoRA training complete.")
