@@ -875,9 +875,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             for name, param in vla.named_parameters():
                 if any(x in name for x in ['lora_a', 'lora_b', 'block_scale']):
                     param.requires_grad = True
-            for name, module in vla.named_modules():
-                if isinstance(module, CLLoRALinear) and module.is_shared and module._freeze_a:
-                    module.lora_a.requires_grad = False
+            # PI: shared A trainable in Stage 1, frozen by freeze_stage1_params after
             lora_params = sum(p.numel() for p in vla.parameters() if p.requires_grad)
             print(f"[CL-LoRA] LoRA trainable params after freeze: {lora_params:,}")
         else:

@@ -606,10 +606,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                 if hasattr(param, '_frozen_by_cl_lora'):
                     continue
                 param.requires_grad = True
-        # Re-apply freeze_a: shared layer lora_a must stay frozen
-        for name, module in vla.named_modules():
-            if isinstance(module, CLLoRALinear) and module.is_shared and module._freeze_a:
-                module.lora_a.requires_grad = False
+        # PI: shared A trainable in Stage 1, frozen by freeze_stage1_params after
 
         lora_trainable = sum(p.numel() for p in vla.parameters() if p.requires_grad)
         print(f"[CL-LoRA] LoRA trainable params after freeze: {lora_trainable:,}")

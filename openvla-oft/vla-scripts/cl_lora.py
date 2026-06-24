@@ -73,15 +73,14 @@ class CLLoRALinear(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        # principle 3: shared layers use orthogonal init for A
+        # shared A: orthogonal init; specific A: kaiming init
         if self.is_shared and self._orthogonal_init:
             nn.init.orthogonal_(self.lora_a)
         else:
             nn.init.kaiming_uniform_(self.lora_a, a=math.sqrt(5))
         nn.init.zeros_(self.lora_b)
-
-        if self._freeze_a:
-            self.lora_a.requires_grad = False
+        # PI approach: shared A is trainable in Stage 1, frozen AFTER Stage 1
+        # (freeze happens in freeze_stage1_params, not here)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         result = F.linear(x, self.weight, self.bias)
@@ -178,23 +177,21 @@ def inject_cl_lora_into_model(
 
 
 def freeze_stage1_params(model) -> None:
-    """PI approach: After Stage 1, freeze shared B and specific A.
+    """PI approach: After Stage 1, freeze shared A and shared B.
 
-    - shared LoRA-A: already frozen (orthogonal init + freeze_a)
+    - shared LoRA-A: NOW frozen (PI: Stage 1 learns basis, then locked)
     - shared LoRA-B: NOW frozen (shared output knowledge)
-    - specific LoRA-A: NOW frozen (shared input knowledge)
+    - specific LoRA-A: stays TRAINABLE (7B model needs plasticity)
     - specific LoRA-B + block_scale: stay trainable (banked per task)
     """
     frozen = 0
     for name, module in model.named_modules():
         if isinstance(module, CLLoRALinear):
             if module.is_shared:
-                module.lora_b.requires_grad = False
-                frozen += 1
-            else:
                 module.lora_a.requires_grad = False
-                frozen += 1
-    print(f"[TaskBank] Stage 1 freeze: {frozen} layers locked (shared B + specific A)")
+                module.lora_b.requires_grad = False
+                frozen += 2
+    print(f"[TaskBank] Stage 1 freeze: {frozen} params locked (shared A + shared B)")
 
 
 def reinit_bank_for_new_task(model) -> None:
