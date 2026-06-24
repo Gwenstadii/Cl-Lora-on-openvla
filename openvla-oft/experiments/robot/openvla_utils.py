@@ -328,10 +328,16 @@ def get_vla(cfg: Any) -> torch.nn.Module:
         if eval_task > 0:
             bank_path = os.path.join(cfg.pretrained_checkpoint, f"task_{eval_task}_bank.pt")
             if os.path.exists(bank_path):
-                sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../vla-scripts'))
-                from cl_lora import load_task_bank
-                load_task_bank(vla, None, bank_path)
-                print(f"[*] Restored task {eval_task} bank for evaluation!")
+                try:
+                    from cl_lora import load_task_bank
+                except ImportError:
+                    print(f"[!] Failed to import load_task_bank from cl_lora. Check sys.path.")
+                    load_task_bank = None
+                if load_task_bank is not None:
+                    load_task_bank(vla, None, bank_path)
+                    print(f"[*] Restored task {eval_task} bank ({os.path.getsize(bank_path)} bytes)")
+                else:
+                    print(f"[!] load_task_bank unavailable")
             else:
                 print(f"[!] Task bank not found: {bank_path}")
         print()
