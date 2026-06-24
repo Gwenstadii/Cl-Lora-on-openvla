@@ -177,6 +177,13 @@ def initialize_model(cfg: GenerateConfig):
                     action_head.load_state_dict(ah_bank, strict=False)
                     print(f"[*] Restored action_head from task {cfg.eval_task_id} bank")
 
+                # Also restore model-side LoRA params from the same bank
+                import sys as _sys
+                _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../vla-scripts'))
+                from cl_lora import load_task_bank as _load_task_bank
+                _load_task_bank(model, None, bank_path)
+                print(f"[*] Restored task {cfg.eval_task_id} bank for model (LoRA-B + block_scale)")
+
     # Load noisy action projector if using diffusion
     noisy_action_projector = None
     if cfg.use_diffusion:
