@@ -176,13 +176,12 @@ def inject_cl_lora_into_model(
 # This is the PI adaptation of CL-LoRA for VLA models.
 
 
-def freeze_stage1_params(model) -> None:
-    """PI approach: After Stage 1, freeze shared A and shared B.
+def freeze_stage1_params(model, freeze_specific_a: bool = True) -> None:
+    """PI approach: After Stage 1, freeze shared params.
 
-    - shared LoRA-A: NOW frozen (PI: Stage 1 learns basis, then locked)
-    - shared LoRA-B: NOW frozen (shared output knowledge)
-    - specific LoRA-A: stays TRAINABLE (7B model needs plasticity)
-    - specific LoRA-B + block_scale: stay trainable (banked per task)
+    Always frozen: shared LoRA-A + shared LoRA-B.
+    Same-domain (freeze_specific_a=True): also freeze specific LoRA-A (v7 behavior).
+    Cross-domain (freeze_specific_a=False): keep specific LoRA-A trainable (v8).
     """
     frozen = 0
     for name, module in model.named_modules():
@@ -191,7 +190,11 @@ def freeze_stage1_params(model) -> None:
                 module.lora_a.requires_grad = False
                 module.lora_b.requires_grad = False
                 frozen += 2
-    print(f"[TaskBank] Stage 1 freeze: {frozen} params locked (shared A + shared B)")
+            elif freeze_specific_a:
+                module.lora_a.requires_grad = False
+                frozen += 1
+    extra = " + specific A" if freeze_specific_a else ""
+    print(f"[TaskBank] Stage 1 freeze: {frozen} params locked (shared A + shared B{extra})")
 
 
 def reinit_bank_for_new_task(model) -> None:

@@ -115,6 +115,7 @@ class TrainCLConfig:
     orthogonal_init: bool = True
     freeze_a: bool = True
     use_block_scale: bool = True
+    freeze_specific_a: bool = True             # v7: freeze specific A after Stage 1. Set False for cross-domain.
     clip_weight: float = 1.0
     merge_lora_during_training: bool = False
 
@@ -644,7 +645,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
 
     # ---- PI Task Bank: freeze shared knowledge, reinit bank for new task ----
     if cfg.use_cl_lora and cfg.stage > 1 and cfg.previous_checkpoint_dir is not None:
-        freeze_stage1_params(vla)
+        freeze_stage1_params(vla, freeze_specific_a=cfg.freeze_specific_a)
         reinit_bank_for_new_task(vla)
         lora_trainable = sum(p.numel() for p in vla.parameters() if p.requires_grad)
         print(f"[TaskBank] Stage {cfg.stage} trainable after freeze+reinit: {lora_trainable:,}")
@@ -962,7 +963,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     # PI Task Bank: freeze after Stage 1, save bank each stage, copy old banks forward
     if cfg.use_cl_lora and distributed_state.is_main_process:
         if cfg.stage == 1:
-            freeze_stage1_params(vla.module)
+            freeze_stage1_params(vla.module, freeze_specific_a=cfg.freeze_specific_a)
         # Copy old task banks from previous checkpoint
         if cfg.previous_checkpoint_dir is not None:
             import glob as _g; import shutil as _sh
