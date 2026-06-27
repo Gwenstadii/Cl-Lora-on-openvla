@@ -120,7 +120,7 @@ class TrainCLConfig:
     merge_lora_during_training: bool = False
 
     # ---- Knowledge Distillation ----
-    use_kd: bool = True
+    use_kd: bool = False
     lambda_kd: float = 1.0
     teacher_checkpoint_dir: Optional[str] = None
     teacher_checkpoint_step: Optional[int] = None
