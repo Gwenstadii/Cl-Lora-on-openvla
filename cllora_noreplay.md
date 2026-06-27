@@ -42,39 +42,6 @@ Stage 4 (Task D):  同理 (切换数据集 libero_goal)
 
 仅 LlamaDecoderLayer 的 attn (q/k/v/o_proj) + ffn (gate/up/down_proj)，共 224 层。视觉骨干 (SigLIP)、lm_head、投影器全部冻结，注入率为 0。
 
-## 版本演进
-
-### 配置对比
-
-| | v7 | v11 | v12 | v13 | **vlast** |
-|---|---|---|---|---|---|
-| **freeze_specific_a** | True (未生效) | True | True | True | True |
-| **shared_depth** | 8 | 8 | 16 | 22 | **8** |
-| **共享层** | 8 | 8 | 16 | 22 | 8 |
-| **特定层** | 24 | 24 | 16 | 10 | 24 |
-| **bank B 矩阵数** | 168 | 168 | 112 | 70 | 168 |
-| **与 PI 对齐** | ✗ (bug) | ✓ | ✓ | ✓ | ✓ |
-| **接哪个 Stage 2** | — | v7 A | v7 B | v7 A | **v11 Task C** |
-
-### 实验结果
-
-| | Stage 2 | | Stage 3 | | | Stage 4 | | | |
-|---|---|---|---|---|---|---|---|---|---|
-| | A | B | A | B | C | A | B | C | D |
-| **v7** | 0.20 | 0.98 | 0.00 | 0.00 | 0.84 | 0.20 | 0.94 | 0.94 | 1.00 |
-| **v11** | — | — | 0.20 | 0.95 | 1.00 | — | — | — | — |
-| **v12** | — | — | 0.18 | ~1.00 | ~1.00 | — | — | — | — |
-| **v13** | — | — | 0.25 | ~1.00 | 0.36 | — | — | — | — |
-| **vlast** | — | — | — | — | — | 0.22 | 0.92 | 0.86 | 0.96 |
-
-### 关键结论
-
-- **v7 bug**：freeze_stage1_params 实际未冻结 specific A（范数漂移 5.84→6.03），导致所有阶段行为不稳定
-- **v11 修复**：代码正确执行 PI 策略，C 学到 100%，但 B retention 高（95%）
-- **v12** shared_depth=16：bank 从 168 降到 112，B retention 仍 ~100%——shared_depth 调不动
-- **v13** shared_depth=22：bank 降到 70，B retention 依旧，C 降到 36%（可训容量挤死）
-- **vlast**：退回 shared_depth=8，用 v11 Task C 接 Stage 4，得到完整 ABCD 矩阵
-
 ## 与 PI 系列对比
 
 | | PI 系列 (Gemma-2B) | vlast (Llama-7B) | 是否一致 |

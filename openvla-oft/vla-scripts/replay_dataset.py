@@ -1,102 +1,73 @@
-"""
-PrototypeReplayDataset: reads offline prototype replay buffer .npz samples
-and converts them to the format expected by RLDSBatchTransform for training.
-
-Compatible with buffers built by:
-  - build_replay_buffer_openvla.py  (prototype-based, saves action_chunk)
-  - build_uniform_replay_buffer.py  (uniform, saves action_chunk)
-  - Legacy buffers (single action, tile fallback)
-"""
-
-import json
 import os
-import numpy as np
+import json
 import torch
+import numpy as np
+from PIL import Image
 from torch.utils.data import Dataset
-
+from prismatic.vla.datasets import RLDSBatchTransform
 
 class PrototypeReplayDataset(Dataset):
-    def __init__(self, replay_dir: str, batch_transform, min_samples: int = 0):
+    def __init__(self, replay_dir: str, batch_transform: RLDSBatchTransform):
         self.replay_dir = replay_dir
         self.batch_transform = batch_transform
-
+        self.samples = []
+        
+        # 读取 manifest.jsonl
         manifest_path = os.path.join(replay_dir, "manifest.jsonl")
         if not os.path.exists(manifest_path):
-            raise FileNotFoundError(f"Manifest not found: {manifest_path}")
-
-        records = []
+            raise FileNotFoundError(f"Manifest not found at {manifest_path}")
+            
         with open(manifest_path, "r", encoding="utf-8") as f:
             for line in f:
-                line = line.strip()
-                if line:
-                    records.append(json.loads(line))
+                record = json.loads(line.strip())
+                self.samples.append(record)
 
-        if not records:
-            raise ValueError(f"Manifest is empty: {manifest_path}")
+        if len(self.samples) == 0:
+            raise RuntimeError(
+                f"Manifest at {manifest_path} is empty. "
+                "The replay buffer may have been built with zero matching samples. "
+                "Check that the buffer build script's target_task_name matches the dataset."
+            )
 
-        self._records = records
-        self._base_len = len(records)
-        # Ensure len >= batch_size to avoid DataLoader crash
-        self._len = max(self._base_len, int(min_samples))
-
-        print(f"[Replay Dataset] Loaded {self._base_len} prototype frames from {replay_dir}")
+        print(f"[Replay Dataset] Successfully loaded {len(self.samples)} prototype frames from {replay_dir}")
 
     def __len__(self):
-        return self._len
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        rec = self._records[idx % self._base_len]
-        npz_path = os.path.join(self.replay_dir, rec["sample_path"])
-
-        data = np.load(npz_path, allow_pickle=False)
-
-        # --- Image ---
-        img_array = data["image"]  # (H, W, 3)
-
-        # --- Action chunk ---
-        if "action_chunk" in data:
-            action = np.asarray(data["action_chunk"], dtype=np.float32)
-        elif "action" in data:
-            # Legacy buffer: single action, tile to [action_horizon, 7]
-            action = np.asarray(data["action"], dtype=np.float32)
-            if action.ndim == 1:
-                action = np.tile(action, (8, 1))
-        else:
-            raise KeyError(f"Neither 'action_chunk' nor 'action' found in {npz_path}")
-
-        # --- Task description ---
-        task_raw = data.get("task", rec.get("task", ""))
-        if isinstance(task_raw, np.ndarray):
-            task_raw = str(task_raw)
-        task_desc = task_raw.encode("utf-8") if isinstance(task_raw, str) else task_raw
-
-        # --- Dataset name ---
-        dataset_name = rec.get("dataset_name", "libero_spatial_no_noops")
-
-        # --- Construct dummy step matching RLDS format ---
-        # RLDS batch format expected by RLDSBatchTransform:
-        #   action: [window_size + future_action_window_size, 7] = [8, 7]
-        #   observation["image_primary"]: [window_size, H, W, 3] = [1, H, W, 3]
-        #   task["language_instruction"]: bytes
-        #   dataset_name: str
-        img_with_window = np.expand_dims(img_array, axis=0)  # [1, H, W, 3]
-
+        record = self.samples[idx]
+        npz_path = os.path.join(self.replay_dir, record["sample_path"])
+        
+        # 1. 加载 npz 数据 (此时是 Numpy 数组)
+        data = np.load(npz_path)
+        img_array = data["image"]  # 原形状: (H, W, 3)
+        action = data["action"]    # 原形状: (7,) 
+        task_desc = str(data["task"]).encode('utf-8')
+        
+        # 2. 动作维度对齐 (OpenVLA 期望 Action Chunk 维度 [8, 7])
+        if len(action.shape) == 1:
+            action = np.tile(action, (8, 1))
+            
+        # 3. 🚨 核心修复：不要转成 PIL Image！
+        # 增加 window_size 维度，模拟 RLDS 切块后的输出 [1, H, W, 3]
+        img_with_window = np.expand_dims(img_array, axis=0) 
+        
+        # 4. 构造 Dummy 轨迹字典
         dummy_step = {
             "observation": {
                 "image_primary": img_with_window,
             },
             "task": {
-                "language_instruction": task_desc,
+                "language_instruction": task_desc
             },
-            "action": action,  # [8, 7] (or [action_horizon, 7])
-            "dataset_name": dataset_name,
+            "action": action,
+            "dataset_name": "libero_spatial_no_noops" 
         }
-
-        # Optional: proprio state
+        
+        # 以防万一你的配置里开启了 proprio
         if "state" in data:
-            dummy_step["observation"]["proprio"] = np.expand_dims(
-                np.asarray(data["state"], dtype=np.float32), axis=0
-            )
-
+            dummy_step["observation"]["proprio"] = np.expand_dims(data["state"], axis=0)
+            
+        # 让 OpenVLA 自己的 Transform 去做最后的清洗
         processed_batch = self.batch_transform(dummy_step)
         return processed_batch
