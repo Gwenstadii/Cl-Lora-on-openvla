@@ -463,7 +463,7 @@ def _build_replay_loaders(
     replay_bs = cfg.replay_batch_size if cfg.replay_batch_size is not None else cfg.batch_size
 
     for buf_dir in cfg.replay_buffer_dirs:
-        dataset = PrototypeReplayDataset(buf_dir, batch_transform)
+        dataset = PrototypeReplayDataset(buf_dir, batch_transform, min_samples=replay_bs)
         if len(dataset) == 0:
             raise RuntimeError(f"Replay buffer at {buf_dir} contains 0 samples. "
                                "Check that the buffer was built correctly.")
@@ -643,6 +643,35 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         _pending_action_head_state = None
         _pending_vision_state = None
 
+    # ---- Teacher snapshot (MUST be created BEFORE freeze+reinit) ----
+    teacher_snapshot = None
+    if cfg.use_kd and cfg.stage > 1:
+        teacher_loaded = False
+        if cfg.teacher_checkpoint_dir is not None:
+            teacher_path = cfg.teacher_checkpoint_dir
+            if cfg.teacher_checkpoint_step is not None:
+                teacher_path = os.path.join(teacher_path, f"teacher_snapshot--{cfg.teacher_checkpoint_step}.pt")
+            elif os.path.isdir(teacher_path):
+                snapshots = sorted([f for f in os.listdir(teacher_path) if f.startswith("teacher_snapshot--")])
+                if snapshots:
+                    teacher_path = os.path.join(teacher_path, snapshots[-1])
+            if os.path.isfile(teacher_path):
+                teacher_snapshot = load_teacher_snapshot(teacher_path)
+                teacher_loaded = True
+                print(f"[KD] Loaded teacher snapshot with {len(teacher_snapshot)} tensors")
+        if not teacher_loaded:
+            # Fallback: derive teacher from current trainable params (before freeze+reinit).
+            # This handles vlast checkpoints that don't have pre-saved teacher snapshots.
+            print("[KD] No teacher snapshot found, creating from current trainable params...")
+            teacher_snapshot = {}
+            for name, param in vla.named_parameters():
+                if param.requires_grad:
+                    teacher_snapshot[f"model.{name}"] = param.data.cpu().clone()
+            if _pending_action_head_state is not None:
+                for k, v in _pending_action_head_state.items():
+                    teacher_snapshot[f"action_head.{k}"] = v.cpu().clone()
+            print(f"[KD] Created teacher snapshot from current state ({len(teacher_snapshot)} tensors)")
+
     # ---- PI Task Bank: freeze shared knowledge, reinit bank for new task ----
     if cfg.use_cl_lora and cfg.stage > 1 and cfg.previous_checkpoint_dir is not None:
         freeze_stage1_params(vla, freeze_specific_a=cfg.freeze_specific_a)
@@ -687,22 +716,11 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     if cfg.use_diffusion:
         raise NotImplementedError("Diffusion not yet implemented for CL-LoRA. Set --use_l1_regression=True.")
 
-    # ---- Teacher snapshot ----
-    teacher_snapshot = None
-    if cfg.use_kd:
-        if cfg.teacher_checkpoint_dir is not None:
-            teacher_path = cfg.teacher_checkpoint_dir
-            if cfg.teacher_checkpoint_step is not None:
-                teacher_path = os.path.join(teacher_path, f"teacher_snapshot--{cfg.teacher_checkpoint_step}.pt")
-            elif os.path.isdir(teacher_path):
-                # Auto-discover latest snapshot
-                snapshots = sorted([f for f in os.listdir(teacher_path) if f.startswith("teacher_snapshot--")])
-                if snapshots:
-                    teacher_path = os.path.join(teacher_path, snapshots[-1])
-            teacher_snapshot = load_teacher_snapshot(teacher_path)
-            print(f"[KD] Loaded teacher snapshot with {len(teacher_snapshot)} tensors")
-        else:
-            print("[KD] WARNING: use_kd=True but no teacher_checkpoint_dir specified. KD will be skipped.")
+    # ---- Teacher snapshot is loaded/created before freeze+reinit (see above) ----
+    if cfg.use_kd and teacher_snapshot is not None:
+        print(f"[KD] Using teacher snapshot with {len(teacher_snapshot)} tensors for KD loss")
+    elif cfg.use_kd:
+        print("[KD] WARNING: use_kd=True but no teacher snapshot available. KD will be skipped.")
 
     # ---- NUM_PATCHES ----
     NUM_PATCHES = vla.module.vision_backbone.get_num_patches() * vla.module.vision_backbone.get_num_images_in_input()
