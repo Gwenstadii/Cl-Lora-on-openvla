@@ -211,14 +211,13 @@ def reinit_bank_for_new_task(model) -> None:
 
 
 def save_task_bank(model, action_head, bank_dir: str, stage: int) -> None:
-    """Save per-task bank: specific LoRA-A + LoRA-B + block_scale + action_head."""
+    """Save per-task bank: specific LoRA-B + block_scale + action_head."""
     import os
     os.makedirs(str(bank_dir), exist_ok=True)
     bank = {}
     for name, module in model.named_modules():
         if isinstance(module, CLLoRALinear) and not module.is_shared:
             layer_key = name.replace('.', '_')
-            bank[f"{layer_key}.lora_a"] = module.lora_a.data.cpu().clone()
             bank[f"{layer_key}.lora_b"] = module.lora_b.data.cpu().clone()
             if module.block_scale is not None:
                 bank[f"{layer_key}.block_scale"] = module.block_scale.data.cpu().clone()
@@ -231,12 +230,12 @@ def save_task_bank(model, action_head, bank_dir: str, stage: int) -> None:
 
 
 def load_task_bank(model, action_head, bank_path: str) -> None:
-    """Load per-task bank: restore specific LoRA-A + LoRA-B + block_scale + action_head."""
+    """Load per-task bank: restore specific LoRA-B + block_scale + action_head."""
     bank = torch.load(bank_path, map_location='cpu', weights_only=True)
     for name, module in model.named_modules():
         if isinstance(module, CLLoRALinear) and not module.is_shared:
             layer_key = name.replace('.', '_')
-            for suffix in ['lora_a', 'lora_b', 'block_scale']:
+            for suffix in ['lora_b', 'block_scale']:
                 key = f"{layer_key}.{suffix}"
                 if key in bank:
                     target = getattr(module, suffix, None)
