@@ -1,0 +1,315 @@
+# Prototype Replay v2 技术说明
+
+本文档说明 RoboTwin2.0 `/policy/pi05` 实验基座中 Prototype Replay v2 的机制设计、工程链路与关键代码位置。Prototype Replay v2 的目标不是简单增加一个旧数据 loader，而是在旧任务完整训练集不可再访问的持续学习设定下，用极少量旧任务 episode 构建高价值 replay buffer，并在后续任务训练中用同构 flow-matching loss 约束旧任务行为。
+
+## 1. 设计目标
+
+在 RoboTwin 顺序学习中：
+
+- 当前阶段使用当前新任务完整 50 条专家轨迹。
+- 旧任务不再直接访问完整训练集。
+- 每个旧任务完成训练后，离线构建少量 prototype replay buffer。
+- 后续阶段只加载旧任务 buffer，而不是加载旧任务完整数据。
+
+Prototype Replay v1 曾使用“物理启发分段 + 视觉特征原型 + top-K 最近帧”。该设计在 RoboTwin 上暴露出三个问题：
+
+1. 分段只粗略反映物理变化，未充分利用双臂末端运动学。
+2. 原型空间偏视觉，和 VLA policy 的动作生成目标不够一致。
+3. top-K 最近帧容易在同一小片段内重复采样，覆盖不足。
+
+Prototype Replay v2 围绕这三点升级为：
+
+```text
+双臂末端运动学隐式分段
++ 动作条件多模态行为表征
++ 段内时序去重最大覆盖选择
+```
+
+脚本入口：
+
+- `scripts/build_robotwin_prototype_buffer_v2.py:1-11`
+
+## 2. 输入数据与 RoboTwin 数据格式适配
+
+RoboTwin pi0/pi0.5 训练使用 LeRobot/openpi 格式的 `training_data`，但真正进行物理技能分段时，需要原始数采数据中的末端位姿、关节动作和夹爪信号。因此 v2 同时读取：
+
+- LeRobot 训练数据：用于获得训练时真实使用的三相机图像、state、action chunk、prompt。
+- RoboTwin 原始 HDF5：用于获得双臂 end-effector pose、joint action、gripper action。
+
+原始 HDF5 读取逻辑：
+
+- `scripts/build_robotwin_prototype_buffer_v2.py:129-182`
+
+该函数读取：
+
+- `/joint_action/left_arm`
+- `/joint_action/right_arm`
+- `/joint_action/left_gripper`
+- `/joint_action/right_gripper`
+- `/endpose/left_endpose`
+- `/endpose/right_endpose`
+
+并整理为：
+
+- 14D 双臂 joint action。
+- `[T, 2, 7]` 双臂末端位姿。
+- `[T, 2]` 双臂夹爪状态。
+
+由于 RoboTwin 的 `process_data.py` 通常以 `state[t]` 配对 `action[t+1]`，raw episode 和 LeRobot episode 的帧数、起点、顺序并不一定逐字面一致。v2 因此加入自动校准：
+
+- raw/LeRobot 对齐校验：`scripts/build_robotwin_prototype_buffer_v2.py:218-245`
+- 自动匹配 raw episode 顺序：`scripts/build_robotwin_prototype_buffer_v2.py:248-284`
+- 构建阶段输出对齐结果：`scripts/build_robotwin_prototype_buffer_v2.py:738-762`
+
+这一步非常重要：它避免了因为 raw episode 文件顺序和 LeRobot episode 顺序不同，导致“用 A 轨迹的物理信号给 B 轨迹分段”的隐蔽错误。
+
+## 3. 双臂末端运动学隐式分段
+
+v2 的分段不引入外部 VLM 打标签，因此仍然是“隐式技能分段”。它参考 AtomicVLA 中基于物理变化识别技能边界的思想，但在 RoboTwin 中改为纯规则的双臂末端运动学版本。
+
+核心代码：
+
+- 运动信号计算：`scripts/build_robotwin_prototype_buffer_v2.py:315-392`
+- 短段合并：`scripts/build_robotwin_prototype_buffer_v2.py:395-443`
+- 分段构建：`scripts/build_robotwin_prototype_buffer_v2.py:446-454`
+- 每条 episode 的分段统计输出：`scripts/build_robotwin_prototype_buffer_v2.py:792-831`
+
+每个相邻窗口会计算三类底层物理变化：
+
+1. **平移变化**：双臂末端 xyz 位移。
+2. **旋转变化**：双臂末端姿态变化，基于四元数相对旋转向量。
+3. **夹爪变化**：双臂 gripper 开合变化。
+
+随后脚本会：
+
+- 按阈值把三类变化标准化。
+- 做平滑，降低单帧噪声影响。
+- 分别判断左臂/右臂的主运动模式。
+- 构造包含双臂活动状态、gripper 状态与运动强度的 motion descriptor。
+- 根据主运动模式变化、活动/静止变化和持续性约束切分 segment。
+- 对过短 segment 做合并，避免噪声导致碎片化。
+
+这里的“隐式技能语义”不是文本标签里的 “pick/place/open” 等显式语义，而是底层运动过程的一致性。例如：
+
+- 一段内主要是左/右臂末端平移，通常对应接近、移动、对齐等过程。
+- 一段内夹爪变化显著，通常对应抓取或释放过程。
+- 一段内双臂同时活动，通常对应协同搬运或调整。
+- 一段内接近静止，通常可能是接触稳定、等待或姿态微调。
+
+因此，同一 segment 内的帧在物理动作含义上更一致；不同 segment 则更可能对应技能阶段切换。
+
+## 4. 动作条件多模态行为表征
+
+v1 使用视觉特征计算 prototype，这对图像分类任务合理，但对 VLA policy 不够理想。VLA 最终学习的是“在视觉语言条件下输出动作”，因此 v2 将 prototype 空间升级为动作条件多模态行为空间。
+
+模型特征提取入口：
+
+- 构造 feature function：`scripts/build_robotwin_prototype_buffer_v2.py:482-487`
+- 提取 context/action features：`scripts/build_robotwin_prototype_buffer_v2.py:490-532`
+- 模型内部行为特征接口：`src/openpi/models/pi0.py:253-292`
+
+v2 从训练好的 checkpoint 中提取两类模型内部表示：
+
+1. **context feature**：视觉语言上下文特征，代表模型看到什么、语言目标是什么。
+2. **action feature**：动作生成侧隐变量，代表模型在当前状态下倾向怎样行动。
+
+同时，v2 还加入来自原始轨迹的物理 motion descriptor。三者共同融合为行为特征：
+
+- action token 局部池化：`scripts/build_robotwin_prototype_buffer_v2.py:535-546`
+- 多模态行为特征融合：`scripts/build_robotwin_prototype_buffer_v2.py:549-576`
+
+默认权重为：
+
+```text
+context_weight = 0.25
+action_weight  = 0.50
+physical_weight = 0.25
+```
+
+每一类特征先独立归一化，再按 `sqrt(weight)` 缩放后拼接，最后整体归一化。这样得到的 prototype 不再只是“视觉中心”，而是 segment 内“视觉语言条件 + 动作倾向 + 物理运动模式”的中心。
+
+可以把它理解为每个隐式技能段都有一个行为原型 `z_t`：
+
+```text
+z_t = normalize([
+  sqrt(w_context)  * context_feature,
+  sqrt(w_action)   * action_feature,
+  sqrt(w_physical) * physical_descriptor
+])
+```
+
+`z_t` 所在空间不是模型训练中额外引入的新网络层，而是一个离线构造的行为表征空间。它只用于挑选 replay 样本，不改变模型结构。
+
+## 5. 段内时序去重最大覆盖选择
+
+v1 的 top-K 选择方式倾向选择最接近 prototype 的 K 帧。这容易出现一个问题：如果一段里很多相邻帧都非常相似，top-K 会集中在同一小时间片，导致 replay 样本冗余。
+
+v2 改为鲁棒的 coverage selection：
+
+- 代表帧选择：`scripts/build_robotwin_prototype_buffer_v2.py:585-650`
+
+主要步骤：
+
+1. 计算段内行为特征的 medoid/prototype。
+2. 使用 MAD 过滤明显离群帧，避免异常帧进入 buffer。
+3. 设置 temporal gap，让被选帧在时间上尽量分散。
+4. 用 greedy k-center / coverage 思路选择代表帧。
+5. 记录 coverage gain、prototype error、coverage error 等诊断指标。
+
+因此，v2 的 top-K 不再只是“离原型最近”，而是“既接近该段行为中心，又尽量覆盖该段内部变化”。这对长轨迹、多阶段操作的 RoboTwin 任务尤其重要。
+
+## 6. 保存格式
+
+v2 输出的 replay buffer 与 v1 保持训练端兼容。每个 replay sample 保存为可直接训练读取的 `.npz`，包含：
+
+- `cam_high`
+- `cam_left_wrist`
+- `cam_right_wrist`
+- `state`
+- `action`
+- `prompt`
+- 必要 meta 信息
+
+样本写入位置：
+
+- `scripts/build_robotwin_prototype_buffer_v2.py:897-930`
+
+额外诊断与索引文件包括：
+
+- `manifest.jsonl`
+- `segments.jsonl`
+- `meta.json`
+- `prototypes.npz`
+- `behavior_features.npz`
+- `kinematic_diagnostics.npz`
+
+对应代码：
+
+- prototype / behavior / manifest / segment 写入：`scripts/build_robotwin_prototype_buffer_v2.py:963-970`
+- meta 写入：`scripts/build_robotwin_prototype_buffer_v2.py:972-1032`
+- kinematic diagnostics 写入：`scripts/build_robotwin_prototype_buffer_v2.py:837-849`
+
+`meta.json` 中会记录：
+
+- 使用的任务和 checkpoint。
+- source frames / saved replay frames。
+- compression ratio。
+- segmentation 参数。
+- feature fusion 权重。
+- selection 参数。
+- norm assets 路径。
+- replay 训练所需的 `cl_task_id`。
+
+这些信息用于后续压缩率统计、覆盖误差分析、可视化和训练加载。
+
+## 7. 训练端加载与 Loss 闭环
+
+Replay buffer 的训练读取由 `data_loader.py` 完成：
+
+- Offline replay dataset schema：`src/openpi/training/data_loader.py:133-143`
+- 三相机 / state / action / prompt 读取：`src/openpi/training/data_loader.py:145-207`
+- replay data loader 创建：`src/openpi/training/data_loader.py:471-538`
+
+该 loader 会将 replay 样本伪装成与 LeRobotAlohaDataConfig 一致的数据格式，再走原有 transform、归一化、tokenization、resize/pad 流程。因此 replay 分支不会破坏普通 LoRA、CL-Lora no replay 或原有评估链路。
+
+训练入口位于：
+
+- replay loader 构建与 task id 管理：`scripts/train_cl_lora.py:145-223`
+- task/replay flow-matching loss：`scripts/train_cl_lora.py:376-456`
+- replay 触发频率：`scripts/train_cl_lora.py:575-596`
+
+每个训练 step 的目标可写为：
+
+```text
+loss = loss_task + replay_loss_weight * loss_rehearsal
+```
+
+其中 `loss_task` 来自当前新任务完整数据，`loss_rehearsal` 来自旧任务 prototype buffer。Replay batch 会携带旧任务的 `cl_task_id`，从而让 CL-Lora task bank 在旧任务 loss 中选择正确的旧任务参数。
+
+## 8. 当前 pi0 Prototype Replay v2 配置
+
+pi0 当前分支的 Prototype Replay v2 配置位于：
+
+- taskB：`src/openpi/training/config.py:1698-1753`
+- taskC：`src/openpi/training/config.py:1761-1824`
+- taskD：`src/openpi/training/config.py:1833-1897`
+
+这些配置的核心策略是：
+
+- 复用前一阶段 CL-Lora checkpoint。
+- 当前任务使用完整 50 条训练轨迹。
+- 旧任务只加载 v2 prototype buffer。
+- replay loss weight 目前为 `0.5`。
+- replay 每若干步触发一次，以平衡旧任务保持和新任务可塑性。
+- CL-Lora 保留 task bank，但 replay 分支采用更开放的 LoRA 冻结策略，避免新任务学不透。
+
+## 9. 构建命令模板
+
+典型构建命令如下：
+
+```bash
+uv run scripts/build_robotwin_prototype_buffer_v2.py \
+  --repo-id robotwin_handover_mic_pi05_lang1 \
+  --task-name handover_mic \
+  --train-config-name pi0_robotwin_handover_mic_cl_lora \
+  --exp-name robotwin_handover_mic_pi05_lang1 \
+  --checkpoint-id 10000 \
+  --raw-data-dir ../../data/handover_mic/pi05_clean_lang1/data \
+  --output-dir replay_buffers/prototype_v2/pi0/handover_mic_ep10_top3 \
+  --num-episodes 10 \
+  --top-k 3 \
+  --fixed-prompt "Pick up the handheld microphone and hand it over"
+```
+
+如果只想检查 raw/LeRobot 对齐，可加：
+
+```bash
+--validate-only
+```
+
+对齐通过后再正式构建 buffer。
+
+## 10. 与 Uniform Replay 的区别
+
+Uniform Replay 在相同样本预算下均匀抽取帧，优点是简单、覆盖时间轴均匀；缺点是不知道哪些帧真正代表关键行为，也可能浪费预算在静止或低信息量片段。
+
+Prototype Replay v2 的优势是：
+
+- 先按隐式技能段划分轨迹，避免不同技能混在同一原型中。
+- 原型空间包含动作侧模型特征和物理 motion descriptor，而不是只看视觉相似性。
+- 段内选择强调覆盖，减少相邻冗余帧。
+- 输出 segment/prototype/coverage 诊断，便于解释和分析。
+
+因此，v2 更符合 VLA 中“少量旧样本约束旧任务行为”的目标。它不是简单追求帧分布均匀，而是优先保存对旧策略行为更有代表性的状态-动作样本。
+
+## 11. 关键诊断指标
+
+构建时常见输出包括：
+
+- `active_motion_ratio`：该 episode 中被判定为有效运动的帧比例。比例过低可能表示阈值过高，比例过高可能表示阈值过低或噪声较多。
+- `lengths=min/median/max`：该 episode 分段长度统计，用于判断分段是否过碎或过粗。
+- `source frames`：参与构建的少量 episode 总帧数。
+- `saved replay frames`：最终进入 replay buffer 的帧数。
+- `compression_ratio`：`saved replay frames / source frames`。
+- `prototype_error`：所选 prototype 与段内行为特征的距离诊断。
+- `coverage_error`：所选样本对段内特征覆盖程度的诊断。
+
+这些指标可用于后续论文中的 replay buffer 压缩率、覆盖性和样本效率分析。
+
+## 12. 机制小结
+
+Prototype Replay v2 的闭环如下：
+
+```text
+旧任务训练完成
+  -> 读取该任务少量 episode 的 LeRobot 训练数据与 raw HDF5
+  -> 自动校准 raw/LeRobot episode 对齐
+  -> 基于双臂末端平移/旋转/夹爪变化做隐式技能分段
+  -> 用阶段 checkpoint 提取 context/action 行为特征
+  -> 融合视觉语言上下文、动作隐变量和物理 motion descriptor
+  -> 在每个 segment 内做时序去重的 coverage top-K
+  -> 保存三相机/state/action/prompt replay 样本与诊断文件
+  -> 下一阶段训练中以 replay flow-matching loss 约束旧任务行为
+```
+
+该机制使 RoboTwin 上的持续学习不再依赖完整旧任务数据，而是用少量、可解释、动作相关的 prototype 样本提升旧任务 retention，同时保留新任务 plasticity。

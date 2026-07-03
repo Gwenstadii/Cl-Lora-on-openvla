@@ -1,0 +1,214 @@
+# CL-Lora v2 技术说明
+
+本文档说明 RoboTwin2.0 `/policy/pi05` 实验基座中当前 CL-Lora v2 的工程实现与机制设计。这里的 CL-Lora v2 不是“每个任务完整保存一套普通 LoRA adapter”的专家化方案，而是在统一 pi0/pi0.5 VLA 模型内，通过“共享低秩子空间 + 局部任务隔离 + 可控冻结策略”来支持顺序微调。
+
+## 1. 设计目标
+
+RoboTwin 的四阶段顺序微调结果表明，普通 LoRA 在学习新任务后会快速覆盖旧任务能力。CL-Lora v2 的目标是在仍保持参数高效微调的前提下，让模型具备两类能力：
+
+1. **共享能力**：保留一个跨任务可复用的低秩表示空间，用于承载视觉语言到动作生成中的共性知识。
+2. **隔离能力**：为不同任务提供少量可切换的 task-specific 参数，降低新任务更新对旧任务行为的直接覆盖。
+
+在无 replay 分支中，CL-Lora v2 主要依赖结构隔离和冻结策略获得低非零 retention；在 Prototype Replay 分支中，CL-Lora v2 保留 task bank 机制，但冻结策略可以更接近官方 LoRA，以便 replay loss 直接约束旧任务行为，同时释放足够新任务学习能力。
+
+## 2. 核心配置入口
+
+CL-Lora v2 的模型级开关集中在 `Pi0Config` 中：
+
+- `src/openpi/models/pi0_config.py:34-45`
+
+关键字段包括：
+
+- `cl_task_id`：当前训练或推理使用的任务 bank id。
+- `cl_num_tasks`：任务 bank 容量。
+- `cl_pali_lora_bank` / `cl_action_lora_bank`：是否给 PaliGemma / action expert 启用 task-specific LoRA-B bank。
+- `cl_pali_block_weight_bank` / `cl_action_block_weight_bank`：是否给 PaliGemma / action expert 启用 task-specific block weight bank。
+- `cl_freeze_shared_lora`：是否冻结 shared 层 LoRA。
+- `cl_freeze_pali_lora_b` / `cl_freeze_action_lora_b`：是否冻结对应模块的 LoRA-B。
+- `cl_freeze_lora_a`：是否冻结 LoRA-A。
+
+这些字段让同一套 pi0/pi0.5 模型可以根据不同实验分支切换“严格隔离”或“更强可塑性”的训练模式。
+
+## 3. PaliGemma 与 Action Expert 的双塔适配
+
+pi0/pi0.5 中有两个 Gemma transformer：
+
+- PaliGemma 视觉语言塔：负责把图像与语言 prompt 编码成上下文特征。
+- Action expert：负责在 flow-matching 过程中生成动作相关表示。
+
+CL-Lora v2 会分别把上述 CL 配置写入两个 Gemma 配置：
+
+- `src/openpi/models/pi0.py:77-101`
+- `src/openpi/models/gemma.py:154-180`
+
+这意味着 PaliGemma 和 action expert 可以独立决定是否使用 LoRA-B bank、block weight bank，以及是否冻结 LoRA-A/B。实际实验中，我们通常让 action expert 承担更强的任务特异性隔离，因为动作生成端更直接决定机器人行为；PaliGemma 作为视觉语言底座，在无 replay 分支中更倾向稳定，在 replay 分支中可根据性能目标适当放宽。
+
+## 4. Shared 层与 Specific 层
+
+CL-Lora v2 参考持续学习中“共享知识 + 局部隔离”的思想，把 Gemma 的 18 层 transformer 分成两段：
+
+- `shared_pos = [0, ..., 8]`：前 9 层，偏向跨任务共享。
+- `specific_pos = [9, ..., 17]`：后 9 层，偏向任务特异适配。
+
+对应代码：
+
+- Gemma 配置中的 CL 字段：`src/openpi/models/gemma.py:52-60`
+- PaliGemma 2B CL-LoRA 配置：`src/openpi/models/gemma.py:120-132`
+- Action expert 300M CL-LoRA 配置：`src/openpi/models/gemma.py:133-147`
+
+两者均启用：
+
+- LoRA 正交初始化。
+- block weight。
+- shared/specific 层划分。
+
+二者的 rank 不同：PaliGemma 默认 rank=16，action expert 默认 rank=32。这样做的直觉是，动作专家更小但更直接影响动作输出，因此给它更强低秩适配容量。
+
+## 5. LoRA-A 共享与 LoRA-B Task Bank
+
+普通 LoRA 更新形式可理解为：
+
+```text
+Delta W = B @ A
+```
+
+CL-Lora v2 中，LoRA-A 更多承担跨任务共享的低秩输入投影方向；LoRA-B 则可以在 specific 层上扩展为 task bank，让不同任务拥有不同的输出映射。
+
+工程实现位置：
+
+- LoRA 配置字段：`src/openpi/models/lora.py:13-32`
+- Attention/Einsum LoRA-B bank 参数创建：`src/openpi/models/lora.py:57-79`
+- Attention/Einsum LoRA-B bank 选择与冻结逻辑：`src/openpi/models/lora.py:80-118`
+- FFN/Linear LoRA-B bank 参数创建：`src/openpi/models/lora.py:160-198`
+- FFN/Linear LoRA-B bank 选择与冻结逻辑：`src/openpi/models/lora.py:201-298`
+
+当 `use_task_lora_b_bank=True` 时，代码会根据传入的 `task_id` 从 `w_b_bank` 中取出当前任务对应的 LoRA-B。这样旧任务的 LoRA-B 不需要在学习新任务时被覆盖；推理旧任务时，只要传入旧任务的 bank id，就会选择旧任务对应的 LoRA-B。
+
+这不是完整 MoE。它没有为每个任务复制整套模型，也没有复制完整 LoRA adapter；它只在关键的 LoRA-B 侧做任务隔离，LoRA-A 及其它可共享部分仍然承担跨任务复用。
+
+## 6. Block Weight Bank
+
+Specific 层除了有 task-specific LoRA-B，还可以有 task-specific block weight。block weight 的作用是让不同任务对 specific 层的 LoRA 增量有不同强弱偏好。
+
+工程实现位置：
+
+- block weight 参数创建：`src/openpi/models/gemma.py:512-530`
+- task-specific block weight 选择与有界缩放：`src/openpi/models/gemma.py:614-624`
+- freeze/ task-bank / scale stack 传入 scanned layers：`src/openpi/models/gemma.py:590-646`
+
+block weight 初始化为 0，前向时通过：
+
+```text
+scale = 1 + 0.5 * tanh(raw_weight)
+```
+
+映射到一个以 1 为中心的有界缩放范围。直观上：
+
+- `scale ≈ 1`：保持该 specific 层 LoRA 增量的默认贡献。
+- `scale > 1`：增强该任务对某些 specific 层的依赖。
+- `scale < 1`：削弱该任务对某些 specific 层的依赖。
+
+因此，LoRA-B bank 是“微观参数隔离”，block weight bank 是“宏观层级调制”。两者配合后，每个任务不必拥有完整 adapter，但可以拥有自己的 specific 层输出映射和层级组合权重。
+
+## 7. Task ID 如何贯穿训练与推理
+
+`cl_task_id` 在模型初始化后保存为当前默认任务 id：
+
+- `src/openpi/models/pi0.py:77-101`
+
+训练前向和推理前向都会把 `task_id` 传入 Gemma/LoRA 路径：
+
+- 训练 denoise / 行为特征前向：`src/openpi/models/pi0.py:279-286`
+- 推理采样动作 task id 选择与前缀 cache：`src/openpi/models/pi0.py:310-336`
+- 推理后缀 denoise 中继续使用同一 task id：`src/openpi/models/pi0.py:347-366`
+
+因此，checkpoint 中会同时保存所有已创建的 bank 参数；推理时不是从旧 checkpoint 临时替换参数，而是在当前 checkpoint 内按 `task_id` 选择对应 bank。比如 taskC checkpoint 中已经包含 taskA/taskB/taskC 的 bank 参数，只要评估时传入 taskA 的 bank id，就会使用 taskA 对应 LoRA-B 与 block weight。
+
+## 8. 冻结策略
+
+CL-Lora v2 的关键不是只有一种冻结策略，而是根据实验分支目标选择不同训练自由度。
+
+### 8.1 官方 LoRA 冻结策略
+
+官方 LoRA 冻结策略位于：
+
+- `src/openpi/models/pi0_config.py:92-125`
+
+该策略冻结主干非 LoRA 参数，允许 LoRA 参数训练，并可通过 `allow_block_weights=True` 允许 block weight 训练。它适合 replay 分支，因为旧任务行为已经通过 replay loss 直接约束，此时需要更强可塑性来同时学好新旧任务。
+
+### 8.2 Strict Adapter-Only 冻结策略
+
+严格 adapter-only 策略位于：
+
+- `src/openpi/models/pi0_config.py:127-153`
+
+它更偏向只训练 task-specific adapter 参数，适合排查或极端隔离实验，但新任务可塑性可能不足。
+
+### 8.3 Balanced LoRA 冻结策略
+
+balanced 策略位于：
+
+- `src/openpi/models/pi0_config.py:155-212`
+
+它的设计目标是在不解冻基础 VLA 主干的情况下，允许：
+
+- LoRA 参数训练。
+- 轻量动作头训练。
+- 可选 block weight 训练。
+- 可选 action expert norm 训练。
+
+无 replay 分支中，balanced 策略可用于强化参数隔离，获得低非零 retention；prototype replay 分支中，如果新任务学不透，则应优先考虑放宽至官方 LoRA 冻结策略或增加 block weight / LoRA 自由度，因为 replay 已经承担旧任务约束。
+
+## 9. 当前实验分支中的使用方式
+
+### 9.1 pi05 CL-Lora + no replay
+
+pi05 无 replay 分支使用 CL-Lora v2 的结构隔离作为主要抗遗忘来源：
+
+- taskA：`src/openpi/training/config.py:826-856`
+- taskB：`src/openpi/training/config.py:878-909`
+- taskC：`src/openpi/training/config.py:931-962`
+- taskD：`src/openpi/training/config.py:990-1021`
+
+taskA 没有旧任务，因此可以使用较开放的 LoRA 训练；taskB/C/D 则通过冻结 shared/Pali/LoRA-A 等参数，让新任务主要写入自己的 action-side task bank。
+
+### 9.2 pi0 CL-Lora + Prototype Replay v2
+
+pi0 Prototype Replay v2 分支保留 task bank，但为了冲击多任务联合性能，使用更开放的官方 LoRA 冻结策略：
+
+- taskA CL-Lora 起点：`src/openpi/training/config.py:1644-1674`
+- taskB + replay v2：`src/openpi/training/config.py:1698-1753`
+- taskC + replay v2：`src/openpi/training/config.py:1761-1824`
+- taskD + replay v2：`src/openpi/training/config.py:1833-1897`
+
+这里的逻辑是：CL-Lora 的 task bank 仍提供局部隔离；Prototype Replay v2 直接提供旧任务数据约束；官方 LoRA 冻结策略则提供足够可塑性，让模型在第三、四阶段仍能学透新任务。
+
+## 10. Replay Loss 与 CL-Lora Task Bank 的关系
+
+`train_cl_lora.py` 支持在当前任务 batch 外额外读取 replay batch，并用旧任务的 `cl_task_id` 计算同构 flow-matching loss：
+
+- replay loader 构建与旧任务 task id 读取：`scripts/train_cl_lora.py:145-223`
+- task loss / replay loss / 总 loss：`scripts/train_cl_lora.py:376-456`
+- 每 N step 触发 replay：`scripts/train_cl_lora.py:575-596`
+
+总目标形式为：
+
+```text
+loss = loss_task + replay_loss_weight * loss_rehearsal
+```
+
+当前实验中 KD 保持关闭，使 CL-Lora 结构稳定性与 Prototype Replay 的贡献更清晰。
+
+## 11. 机制小结
+
+CL-Lora v2 的核心可以概括为：
+
+```text
+共享：LoRA-A / shared 层 / 部分 LoRA 参数承载跨任务共性。
+隔离：specific 层 LoRA-B task bank 保存任务专属动作映射。
+调制：block weight bank 控制不同任务对 specific 层的使用强度。
+选择：训练与推理通过 cl_task_id 选择对应任务 bank。
+约束：无 replay 时主要依赖冻结策略；有 replay 时由 replay loss 直接约束旧行为。
+```
+
+这种设计保留了参数高效微调的优势，又避免退化成“每个任务一整套普通 LoRA adapter”的完全专家化方案。对于 RoboTwin 这类高难双臂 VLA benchmark，CL-Lora v2 更适合作为结构稳定性底座，再与 Prototype Replay v2 结合以获得更高旧任务 retention 与新任务 plasticity。

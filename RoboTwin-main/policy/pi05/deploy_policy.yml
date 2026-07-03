@@ -1,0 +1,22 @@
+# Basic experiment configuration (keep unchanged)
+policy_name: null
+task_name: null
+task_config: null
+ckpt_setting: null
+seed: null
+instruction_type: unseen
+
+# Add Parameters You Need
+train_config_name: null
+model_name: null
+checkpoint_id: 10000
+pi0_step: 50
+fixed_instruction: null
+cl_task_id: null
+eval_repo_id: null
+eval_episodes: 50
+eval_worker_id: 0
+eval_num_workers: 1
+eval_result_tag: null
+eval_seed_start: null
+eval_seed_stride: null

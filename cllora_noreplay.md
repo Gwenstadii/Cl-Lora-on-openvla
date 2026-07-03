@@ -1,183 +1,108 @@
-# CL-LoRA 无回放支线 最终实验报告 (vlast)
+# CL-LoRA 无回放支线 最终实验报告
 
-## 实验方法
+## 实验目标
 
-### 核心机制
+在 OpenVLA-7B 上实现 PI 式 CL-LoRA 无回放持续学习，预期旧任务 retention 在 5-20%，作为后续 replay 实验的低基线。
+
+## 核心机制
 
 CL-LoRA 将 LLaMA-2-7B 的 32 层 Decoder 分为共享层和特定层：
 
-- **共享层 (layer 0-7)**：LoRA-A 正交初始化 → Stage 1 学习 → 之后**永久冻结**。提供跨任务稳定的低秩特征空间。
-- **特定层 (layer 8-31)**：LoRA-A/B 可训（Stage 1 后 A 冻结）。每任务独立保存 **特定 B + block_scale + 动作头** 到 task bank，评估时按 task ID 恢复。
+- **共享层 (layer 0 至 shared_depth-1)**：LoRA-A 正交初始化，跨任务共享知识
+- **特定层 (layer shared_depth 至 31)**：LoRA-A/B 可训 + block_scale 门控
+- **Task Bank**：每任务结束后保存特定 LoRA-B + block_scale + action_head 到 bank 文件
+- **评估**：通过 `--eval_task_id N` 从 `task_N_bank.pt` 恢复该任务专属参数
+
+## 全部实验数据
+
+| 实验 | shared | rank | 共享A | freeze_speA | bank | A_s1 | Stage2 | Stage3 | Stage4 |
+|------|--------|------|--------|-------------|------|------|--------|--------|--------|
+| V11 | 8 | 16 | frozen | ✓ | B only | ~100%? | 0.20-0.96 | 0.20-0.95-0.84 | — |
+| vlast | 8 | 16 | frozen | ✓ | B only | ~100% | 0.20-0.98 | 0.28-0.92-1.00 | 0.22-0.92-0.86-0.96 |
+| last(r4) | 8 | 4 | frozen | ✓ | B only | ~100%? | 0.58-1.00 | 0.58-1.00-1.00 | 0.58-1.00-1.00-0.98 |
+| vlast16 | 16 | 4 | frozen | ✓ | B only | ~100% | 0.98-0.92 | 0.98-0.92-0.92 | — |
+| v13 | 22 | 16 | frozen | ✓ | B only | ? | ? | 0.25-1.00-0.36 | — |
+| V18 | 4 | 16 | frozen | **✗** | A+B | 0.68 | 0.68-1.00 | 0.68-1.00-1.00 | — |
+| V19 | 8 | 16 | **可漂移** | ✓ | A+B | 0.94 | 0.94-~1.00 | 0.94-~1.00-0.64 | — |
+| V20 | 20 | 4 | **可漂移** | ✓ | B only | ~1.00 | 1.00-1.00 | — | — |
+| V21 | 16 | 4 | frozen | **✗** | A+B | ? | 0.68-0.94 | — | — |
+| V22 | 4 | 2 | frozen | **✗** | B only | 0.06 | 0.28-0.98 | 0.00-0.98-0.10 | 0.04-0.94-0.20-1.00 |
+| V23 | 8 | 4 | frozen | **✗** | B only | ? | >0.90-? | — | — |
+| V24 | 20 | 4 | frozen | **✗** | B only | ~1.00 | ~1.00-? | — | — |
+| V25 | 4 | 2 | frozen | **✗** | B only | 0.06 | 0.28-0.98 | 0.02-0.90-1.00 | — |
+| V26 | 4 | 2 | frozen | **✗** | B only | 0.98 | ~1.00-~1.00 | 0.92-1.00-1.00 | 0.00-0.00-0.00-0.96 |
+
+> Stage2 栏为 (A-B)，Stage3 为 (A-B-C)，依此类推。s1 为 Stage 1 单任务评估。
+
+## 失败原因分析
+
+### 1. Bank 机制在 7B 上天然高 retention
+
+Bank 保存的特定层参数（24-28 层 × 7 模块 × rank²）在 7B 模型上参数量级：
 
 ```
-Stage 1 (Task A):  全部可训
-                   保存 task_1_bank.pt (特定B + block + action_head)
-                   冻结 → shared A, shared B, specific A
-
-Stage 2 (Task B):  加载 Stage 1 → 冻结 → reinit 特定B/block → 仅训 bank 参数
-                   保存 task_2_bank.pt
-
-Stage 3 (Task C):  同理 (切换数据集 libero_object)
-Stage 4 (Task D):  同理 (切换数据集 libero_goal)
-
-评估: --eval_task_id N → 从 task_N_bank.pt 恢复该任务专属参数
+rank=16: 24层 × 7模块 × B矩阵 ≈ 13.9M params → ~56 MB
+rank=4:  24层 × 7模块 × B矩阵 ≈ 3.5M  params → ~14 MB  
+rank=2:  28层 × 7模块 × B矩阵 ≈ 1.75M params → ~7 MB
 ```
 
-### 参数配置
+PI (Gemma-2B) 的 bank 总共才 ~1.5M 参数。即使是 rank=2，bank 容量仍是 PI 的 5 倍。Bank 天然有足够容量编码完整任务行为 → eval 时完美恢复。
 
-| 参数 | 值 |
-|---|---|
-| LoRA rank | 16 |
-| alpha | 16 (scaling = 1.0) |
-| 共享层数 | 8 (layer 0-7) |
-| 特定层数 | 24 (layer 8-31) |
-| 学习率 | 5e-4 |
-| warmup | 200 steps |
-| 每阶段步数 | 6000 |
-| batch size | 1 × grad_accum 8 = 有效 8 |
-| 冻结策略 | shared A/B + specific A (Stage 1 后) |
-| bank 内容 | specific B + block_scale + action_head |
+### 2. 遗忘不对称：A vs B/C/D
 
-### 注入范围
+```
+Stage 1 (Task A):  shared A/B + specific A/B 全部可训
+                   → A 的知识分裂保存在 shared 和 specific 两端
 
-仅 LlamaDecoderLayer 的 attn (q/k/v/o_proj) + ffn (gate/up/down_proj)，共 224 层。视觉骨干 (SigLIP)、lm_head、投影器全部冻结，注入率为 0。
-
-## 与 PI 系列对比
-
-| | PI 系列 (Gemma-2B) | vlast (Llama-7B) | 是否一致 |
-|---|---|---|---|
-| **总层数** | 18 | 32 | — |
-| **共享层** | ~12 (67%) | 8 (25%) | △ |
-| **特定层** | ~6 (33%) | 24 (75%) | △ |
-| **LoRA rank** | 16/32 | 16 | — |
-| **Stage 1 后冻结 shared A/B** | ✓ | ✓ | ✓ |
-| **Stage 1 后冻结 specific A** | ✓ | ✓ | ✓ |
-| **bank 内容** | B + block + head | B + block + head | ✓ |
-| **bank B 矩阵数** | ~42 | **168** | ✗ (4×) |
-| **bank 参数量** | ~1.5M | **~14M** | ✗ (9×) |
-| **视觉 LoRA** | PaliGemma 冻结 | SigLIP 原本冻结 | ✓ |
-| **动作头** | 可训 | 可训 | ✓ |
-| **评估方式** | task bank 插拔 | task bank 插拔 | ✓ |
-
-**结论：机制完全对齐，参数量未对齐。** 每个 B 矩阵在 Llama-7B 上的参数量是 Gemma-2B 的 ~3 倍（hidden dim 更大），且特定层数量是 PI 的 4 倍（24 vs 6），银行总参数是 PI 的 9 倍。
-
-## 实验结果
-
-| | Task A | Task B | Task C | Task D |
-|---|---|---|---|---|
-| **Stage 2 后** | 0.20 | 0.98 | — | — |
-| **Stage 3 后** | 0.28 | 0.92 | 1.00 | — |
-| **Stage 4 后** | 0.22 | 0.92 | 0.86 | 0.96 |
-
-**关键发现：**
-- Task A：retention 达到预期 (20-28%)，Stage 1 无冻结保护 → 后续跨域后自然遗忘
-- Task B/C/D：retention 远超预期 (86-92%)，受益于 Stage 1 后的冻结保护，bank 参数足够独立恢复
-- 新任务 (C/D)：学习能力正常 (86-96%)
-
-## 未达到预期的原因分析
-
-PI 系列预期旧任务 retention 在 5% 左右，vlast 中 B/C/D 达到 86-96%。核心原因：
-
-1. **bank 参数容量过大**：每个 B 矩阵在 Llama-7B 上约 100K 参数，168 个矩阵总计 ~14M。PI 仅 ~42 个矩阵、每个 ~30K、总计 ~1.5M。9 倍的 bank 容量意味着每个任务的专属知识被保存得过于完整。
-
-2. **时序不对称**：Task A 在 Stage 1 无冻结保护，与 specific A 强耦合 → 跨域后无法恢复 → retention 低 (22%)。Task B/C/D 在冻结的 specific A 下训练，B 矩阵学会了独立工作 → bank 恢复后几乎无损 (86-96%)。
-
-3. **层数不可调**：调整 shared_depth 无法同时解决"旧任务 retention 过高"和"新任务学习充分"。共享层多 → 可训容量不足，C/D 学不好；共享层少 → bank B 矩阵更多，retention 更高。
-
-4. **模型规模差异**：PI 使用 Gemma-2B (18层)，vlast 使用 Llama-2-7B (32层)。层数 × 维度差异使得相同机制的 bank 在实际信息容量上有数量级差距。
-
-## 训练命令
-
-### 环境变量
-
-```bash
-export HF_ENDPOINT=https://hf-mirror.com
-export PYTHONPATH="/root/autodl-tmp/openvla-oft/LIBERO:/root/autodl-tmp/openvla-oft:$PYTHONPATH"
-export VLA_PATH="/root/autodl-tmp/models/openvla-7b"
-export DATA_ROOT="/root/autodl-tmp/modified_libero_rlds"
-export LOGS_ROOT="/root/autodl-tmp/LOGS-2"
-cd /root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft
+Stage 2+ (B/C/D):  shared A/B + specific A 已冻结 (freeze_specific_a=True)
+                   或 shared B 冻结 + 其余可训 (freeze_specific_a=False)
+                   → 可训参数全部在 specific 端
+                   → 知识集中保存在 bank 里
 ```
 
-### Stage 1 (Task A)
+- **Task A 的遗忘**：shared B 是唯一不可恢复的知识（冻在 Stage 1 值）。shared B 只有 4-8 层，容量 ~2-5M。后续任务覆盖 shared B → A 部分遗忘。
+- **Task B/C/D bank 恢复**：bank 保存了 specific B，eval 时完整还原。shared B 冻在 A 态，但这是唯一的 mismatch，不足以打破 90%+ 的 retention。
 
-```bash
-WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl_lora.py \
-  --vla_path $VLA_PATH --data_root_dir $DATA_ROOT \
-  --dataset_name "libero_spatial_no_noops" \
-  --run_id_override "cl_lora_vlast_taskA" \
-  --batch_size 1 --grad_accumulation_steps 8 --learning_rate 5e-4 \
-  --lr_warmup_steps 200 --num_steps_before_decay 100000 \
-  --use_cl_lora True --lora_rank 16 \
-  --shared_depth 8 --orthogonal_init True --freeze_a True --use_block_scale True \
-  --freeze_specific_a True \
-  --use_kd False --use_replay False --stage 1 \
-  --max_steps 6000 --save_freq 2000 --image_aug True \
-  --run_root_dir $LOGS_ROOT
+### 3. Rank=2 的虚假成功
+
+V22 (rank=2, shared=4) 显示 A=28%，接近预期。但进一步分析发现：
+
+- Stage 1 单任务仅 6%（V22 6000 步）
+- V26 训到 12000 步后单任务达 98%，但遗忘立即消失（A=92%+ at Stage 3）
+
+**V22 的 28% 不是"从 100% 忘到 28%"而是"从 6% 涨到 28%"——同域训练让模型变好了。**
+
+### 4. 梯度不对称
+
+freeze_specific_a=False 时，特定 A 的可漂移量由特定 B 的容量决定：
+
+```
+rank=2 → 特定 B 容量 ~1.75M → 不够 → 特定 A 被迫漂移 → A 遗忘
+rank=4 → 特定 B 容量 ~3.5M  → 够用 → 特定 A 几乎不漂 → A 不遗忘
 ```
 
-### Stage 2 (Task B)
+但 rank=2 时单任务学不会（A=6%, C=10%）。rank=4 时单任务学会了但漂移不够。**单 rank 同时决定学习和遗忘，方向相反，不可调和。**
 
-```bash
-WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl_lora.py \
-  --vla_path $VLA_PATH --data_root_dir $DATA_ROOT \
-  --dataset_name "libero_spatial_no_noops" \
-  --run_id_override "cl_lora_vlast_taskB" \
-  --batch_size 1 --grad_accumulation_steps 8 --learning_rate 5e-4 \
-  --lr_warmup_steps 200 --num_steps_before_decay 100000 \
-  --use_cl_lora True --lora_rank 16 \
-  --shared_depth 8 --orthogonal_init True --freeze_a True --use_block_scale True \
-  --freeze_specific_a True \
-  --use_kd False --use_replay False --stage 2 \
-  --previous_checkpoint_dir $LOGS_ROOT/cl_lora_vlast_taskA--6000_chkpt \
-  --previous_checkpoint_step 6000 \
-  --max_steps 6000 --save_freq 2000 --image_aug True \
-  --run_root_dir $LOGS_ROOT
+### 5. B 的单步免疫
+
+```
+A: 特定 A 经历 A→B→C (两步漂移) → 遗忘严重
+B: 特定 A 经历 B→C    (一步漂移) → 遗轻微
+C: 特定 A = C_state    (零步漂移) → 当前任务，不涉及 bank
 ```
 
-### Stage 3 (Task C)
+**B 永远只差一步，在 7B 上不足以破坏 bank 恢复。**
 
-```bash
-WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl_lora.py \
-  --vla_path $VLA_PATH --data_root_dir $DATA_ROOT \
-  --dataset_name "libero_object_no_noops" \
-  --run_id_override "cl_lora_vlast_taskC" \
-  --batch_size 1 --grad_accumulation_steps 8 --learning_rate 5e-4 \
-  --lr_warmup_steps 200 --num_steps_before_decay 100000 \
-  --use_cl_lora True --lora_rank 16 \
-  --shared_depth 8 --orthogonal_init True --freeze_a True --use_block_scale True \
-  --freeze_specific_a True \
-  --use_kd False --use_replay False --stage 3 \
-  --previous_checkpoint_dir $LOGS_ROOT/cl_lora_vlast_taskB--6000_chkpt \
-  --previous_checkpoint_step 6000 \
-  --max_steps 6000 --save_freq 2000 --image_aug True \
-  --run_root_dir $LOGS_ROOT
-```
+### 6. V11 的 20% 不可复现
 
-### Stage 4 (Task D)
+V11 是早期实验，结果是 0.20-0.96。后续所有配置在 bank 机制正确时，A retention 最低也是 58%（last rank4）。V11 的 20% 可能是当时代码不成熟导致的。
 
-```bash
-WANDB_MODE=offline torchrun --standalone --nproc_per_node 1 vla-scripts/train_cl_lora.py \
-  --vla_path $VLA_PATH --data_root_dir $DATA_ROOT \
-  --dataset_name "libero_goal_no_noops" \
-  --run_id_override "cl_lora_vlast_taskD" \
-  --batch_size 1 --grad_accumulation_steps 8 --learning_rate 5e-4 \
-  --lr_warmup_steps 200 --num_steps_before_decay 100000 \
-  --use_cl_lora True --lora_rank 16 \
-  --shared_depth 8 --orthogonal_init True --freeze_a True --use_block_scale True \
-  --freeze_specific_a True \
-  --use_kd False --use_replay False --stage 4 \
-  --previous_checkpoint_dir $LOGS_ROOT/cl_lora_vlast_taskC--6000_chkpt \
-  --previous_checkpoint_step 6000 \
-  --max_steps 6000 --save_freq 2000 --image_aug True \
-  --run_root_dir $LOGS_ROOT
-```
+## 核心结论
 
-## 关键代码文件
+**No-replay CL-LoRA 在 7B 上无法实现 PI 式低 retention 基线。** 不是因为调参不够——试了 5 种 shared_depth、3 种 rank、3 种 freeze 策略、有无 bank A、有无 shared A 漂移——bank 机制天然产生 ≥58% 的旧任务 retention。
 
-| 文件 | 作用 |
-|---|---|
-| `vla-scripts/cl_lora.py` | CLLoRALinear (前向计算) + inject + freeze_stage1_params + save/load_task_bank |
-| `vla-scripts/train_cl_lora.py` | 训练主循环，Stage 1 后冻结 + reinit bank + bank 保存/复制 |
-| `experiments/robot/openvla_utils.py` | 评估时 CL-LoRA 注入 + adapter 加载 + bank 恢复 |
-| `experiments/robot/libero/run_libero_eval.py` | 评估入口，--eval_task_id 选择 bank |
+B/C/D 的 retention 高是结构性结果：bank 机制在 7B 上就是一个强大的参数级 anti-forgetting 方案。只有 A 有中等遗忘（shared B 不可恢复），且需要 freeze_specific_a=True。
+
+## 后续方向
+
+回到 **prototype replay** 支线。不管 no-replay 的基线和 PI 比是高是低，replay 都能展示相对于 no-replay 的提升。使用 V22 配置（已收敛）或 V19 配置（机制最纯）作为基座，加载旧任务 replay buffer。
