@@ -177,23 +177,23 @@ def inject_cl_lora_into_model(
 
 
 def freeze_stage1_params(model, freeze_specific_a: bool = True) -> None:
-    """Paper-aligned CL-LoRA: shared B permanently frozen, shared A continues learning.
+    """V11-aligned: shared A+B both permanently frozen after Stage 1.
 
-    Shared LoRA-B (down-proj): permanently frozen (anti-forgetting on input projection).
-    Shared LoRA-A (up-proj): NOT frozen, continues to update across all tasks.
+    Shared LoRA-A + LoRA-B: permanently frozen (complete anti-forgetting).
     Specific LoRA-A: frozen if freeze_specific_a=True (orthogonal subspace protection).
     """
     frozen = 0
     for name, module in model.named_modules():
         if isinstance(module, CLLoRALinear):
             if module.is_shared:
+                module.lora_a.requires_grad = False
                 module.lora_b.requires_grad = False
-                frozen += 1
+                frozen += 2
             elif freeze_specific_a:
                 module.lora_a.requires_grad = False
                 frozen += 1
     extra = " + specific A" if freeze_specific_a else ""
-    print(f"[TaskBank] Stage 1 freeze: {frozen} params locked (shared B{extra})")
+    print(f"[TaskBank] Stage 1 freeze: {frozen} params locked (shared A + shared B{extra})")
 
 
 def reinit_bank_for_new_task(model) -> None:
