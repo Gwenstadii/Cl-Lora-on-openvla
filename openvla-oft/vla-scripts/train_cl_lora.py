@@ -135,6 +135,7 @@ class TrainCLConfig:
 
     # ---- Stage management ----
     stage: int = 1
+    skip_reinit: bool = False
     previous_checkpoint_dir: Optional[str] = None
     previous_checkpoint_step: Optional[int] = None
 
@@ -644,7 +645,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         _pending_vision_state = None
 
     # ---- PI Task Bank: freeze shared knowledge, reinit bank for new task ----
-    if cfg.use_cl_lora and cfg.stage > 1 and cfg.previous_checkpoint_dir is not None:
+    if cfg.use_cl_lora and cfg.stage > 1 and cfg.previous_checkpoint_dir is not None and not cfg.skip_reinit:
         freeze_stage1_params(vla, freeze_specific_a=cfg.freeze_specific_a)
         reinit_bank_for_new_task(vla)
         lora_trainable = sum(p.numel() for p in vla.parameters() if p.requires_grad)
