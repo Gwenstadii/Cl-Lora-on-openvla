@@ -195,8 +195,8 @@ class CLLoRAActionHead(nn.Module):
     ):
         super().__init__()
         if hidden_dims is None:
-            hidden_dims = [2048, 2048, 1024]
-        dims = [input_dim] + list(hidden_dims) + [action_dim]
+            hidden_dims = [4096, 2048, 1024]
+        dims = [input_dim] + list(hidden_dims) + [1]  # output 1 scalar per position
         self.num_layers = len(dims) - 1
 
         self.layers = nn.ModuleList()
@@ -224,11 +224,11 @@ class CLLoRAActionHead(nn.Module):
             x = layer(x)
             if i < self.num_layers - 1:
                 x = self.act(x)
-        return x
+        return x.squeeze(-1)  # [B, N, 1] → [B, N]
 
     def predict_action(self, x: torch.Tensor) -> torch.Tensor:
         """Interface expected by OpenVLA modeling_prismatic.py"""
-        return self.forward(x)
+        return self.forward(x.to(self.layers[0].weight.dtype))
 
 
 def inject_cl_lora_into_action_head(action_head, rank, alpha, shared_depth,
