@@ -645,13 +645,39 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         _pending_action_head_state = None
         _pending_vision_state = None
 
+    # ---- Action head ----
+    action_head = None
+    if cfg.use_l1_regression:
+        if cfg.use_cl_lora:
+            action_head = create_cl_lora_action_head(
+                input_dim=vla.llm_dim if not isinstance(vla, DDP) else vla.module.llm_dim,
+                action_dim=ACTION_DIM,
+                rank=cfg.lora_rank,
+                shared_depth=2,
+                device=device_id,
+                dtype=torch.bfloat16,
+            )
+        else:
+            action_head = L1RegressionActionHead(
+                input_dim=vla.llm_dim if not isinstance(vla, DDP) else vla.module.llm_dim,
+                hidden_dim=vla.llm_dim if not isinstance(vla, DDP) else vla.module.llm_dim,
+                action_dim=ACTION_DIM,
+            ).to(torch.bfloat16).to(device_id)
+        if _pending_action_head_state is not None:
+            action_head.load_state_dict(_pending_action_head_state, strict=False)
+
     # ---- PI Task Bank: freeze shared knowledge, reinit bank for new task ----
     if cfg.use_cl_lora and cfg.stage > 1 and cfg.previous_checkpoint_dir is not None and not cfg.skip_reinit:
         freeze_stage1_params(vla, freeze_specific_a=cfg.freeze_specific_a,
                              action_head=action_head)
         reinit_bank_for_new_task(vla, action_head=action_head)
         lora_trainable = sum(p.numel() for p in vla.parameters() if p.requires_grad)
-        print(f"[TaskBank] Stage {cfg.stage} trainable after freeze+reinit: {lora_trainable:,}")
+        if action_head is not None:
+            ah_trainable = sum(p.numel() for p in action_head.parameters() if p.requires_grad)
+        else:
+            ah_trainable = 0
+        print(f"[TaskBank] Stage {cfg.stage} trainable after freeze+reinit: "
+              f"LLaMA={lora_trainable:,}, ActionHead={ah_trainable:,}")
 
     # ---- FiLM ----
     if cfg.use_film:
@@ -673,26 +699,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     if cfg.use_proprio:
         raise NotImplementedError("Proprio not yet implemented for CL-LoRA. Set --use_proprio=False.")
 
-    # ---- Action head ----
-    action_head = None
-    if cfg.use_l1_regression:
-        if cfg.use_cl_lora:
-            action_head = create_cl_lora_action_head(
-                input_dim=vla.module.llm_dim,
-                action_dim=ACTION_DIM,
-                rank=cfg.lora_rank,
-                shared_depth=2,
-                device=device_id,
-                dtype=torch.bfloat16,
-            )
-        else:
-            action_head = L1RegressionActionHead(
-                input_dim=vla.module.llm_dim,
-                hidden_dim=vla.module.llm_dim,
-                action_dim=ACTION_DIM,
-            ).to(torch.bfloat16).to(device_id)
-        if _pending_action_head_state is not None:
-            action_head.load_state_dict(_pending_action_head_state, strict=False)
+    # ---- Wrap action_head in DDP ----
+    if action_head is not None:
         action_head = wrap_ddp(action_head, device_id)
         count_parameters(action_head, "action_head")
 
