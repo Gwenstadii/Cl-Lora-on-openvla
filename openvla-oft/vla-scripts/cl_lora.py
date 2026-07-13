@@ -1,15 +1,14 @@
 """
-CL-LoRA module for continual learning on OpenVLA.
+CL-LoRA module for continual learning on OpenVLA — PI-aligned v35.
 
-Injects CLLoRALinear ONLY into LlamaDecoderLayer's attention (q/k/v/o_proj)
-and FFN (gate/up/down_proj) — matching PI's "attn" + "ffn" scope.
+Architecture (PI-aligned):
+  Backbone (LLaMA-7B):    CL-LoRA injected → Stage 1 all trainable → ALL frozen after.
+  Action Expert (MLP):    CL-LoRA injected → shared A+B+specific A frozen after Stage 1,
+                          specific B + block_scale per-task (bank).
 
-Design principles (from PI):
-  1. FREEZE visual encoder (SigLIP) — NO LoRA, stable features across tasks
-  2. FREEZE LLM backbone weights — only LoRA adapter params are trainable
-  3. Shared layers: LoRA-A orthogonal init + frozen (anti-forgetting)
-  4. Specific layers: LoRA-A/B trainable + block-scale gating
-  5. Lightweight action head only
+PI mapping:
+  PaliGemma ≈ LLaMA-7B (Stage 1 train → freeze all)
+  Action Expert ≈ CLLoRAActionHead (shared/specific split + per-task bank)
 
 Reference: PI0.5 CL-LoRA (openpi/models/lora.py, openpi/models/gemma.py)
 """
@@ -168,74 +167,221 @@ def inject_cl_lora_into_model(
 
 
 # ==============================================================================
+# PI-Aligned CL-LoRA Action Head (Action Expert)
+# ==============================================================================
+
+class CLLoRAActionHead(nn.Module):
+    """PI-aligned Action Expert with CL-LoRA.
+
+    Multi-layer MLP where each Linear layer is replaced with CLLoRALinear.
+    Shared layers (first shared_depth): frozen after Stage 1.
+    Specific layers (remaining): specific A frozen after Stage 1, specific B per-task (bank).
+
+    PI mapping:
+      Shared layers ≈ Action Expert shared LoRA (frozen)
+      Specific layers ≈ Action Expert specific LoRA (A frozen, B banked)
+    """
+
+    def __init__(
+        self,
+        input_dim: int = 4096,
+        hidden_dims: list = None,
+        action_dim: int = 7,
+        rank: int = 16,
+        alpha: float = 16.0,
+        shared_depth: int = 2,
+        orthogonal_init: bool = True,
+        use_block_scale: bool = True,
+    ):
+        super().__init__()
+        if hidden_dims is None:
+            hidden_dims = [2048, 2048, 1024]
+        dims = [input_dim] + list(hidden_dims) + [action_dim]
+        self.num_layers = len(dims) - 1
+
+        self.layers = nn.ModuleList()
+        for i in range(self.num_layers):
+            is_shared = i < shared_depth
+            linear = nn.Linear(dims[i], dims[i + 1])
+            cl_lora = CLLoRALinear(
+                base_layer=linear,
+                rank=rank,
+                alpha=alpha,
+                is_shared=is_shared,
+                orthogonal_init=orthogonal_init,
+                freeze_a=True,
+                use_block_scale=(not is_shared and use_block_scale),
+            )
+            self.layers.append(cl_lora)
+
+        self.act = nn.SiLU()
+        self.shared_depth = shared_depth
+        self.input_dim = input_dim
+        self.action_dim = action_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            if i < self.num_layers - 1:
+                x = self.act(x)
+        return x
+
+    def predict_action(self, x: torch.Tensor) -> torch.Tensor:
+        """Interface expected by OpenVLA modeling_prismatic.py"""
+        return self.forward(x)
+
+
+def inject_cl_lora_into_action_head(action_head, rank, alpha, shared_depth,
+                                     orthogonal_init, use_block_scale, device):
+    """Replace all Linear layers in action head with CLLoRALinear."""
+    replaced = 0
+    for i, layer in enumerate(list(action_head.layers)):
+        if isinstance(layer, CLLoRALinear):
+            continue  # already injected
+    # CLLoRAActionHead already creates CLLoRALinear layers in __init__
+    # This function is a no-op for CLLoRAActionHead (layers are already CL-LoRA)
+    print(f"[CL-LoRA] Action Head ready: {action_head.num_layers} layers, "
+          f"shared_depth={shared_depth}, rank={rank}")
+    return action_head
+
+
+def create_cl_lora_action_head(
+    input_dim: int = 4096,
+    action_dim: int = 7,
+    rank: int = 16,
+    shared_depth: int = 2,
+    device=None,
+    dtype=torch.bfloat16,
+) -> CLLoRAActionHead:
+    """Create a PI-aligned CLLoRAActionHead."""
+    ah = CLLoRAActionHead(
+        input_dim=input_dim,
+        hidden_dims=[2048, 2048, 1024],
+        action_dim=action_dim,
+        rank=rank,
+        alpha=float(rank),
+        shared_depth=shared_depth,
+        orthogonal_init=True,
+        use_block_scale=True,
+    )
+    if device is not None:
+        ah = ah.to(device)
+    ah = ah.to(dtype)
+    n_shared = shared_depth
+    n_specific = ah.num_layers - shared_depth
+    n_bank = n_specific * 3  # lora_a + lora_b + block_scale per specific layer
+    print(f"[CL-LoRA Action Head] {ah.num_layers} layers ({n_shared} shared + {n_specific} specific), "
+          f"{n_bank} banked params, rank={rank}")
+    return ah
+
+
+# ==============================================================================
 # PI-Style Task Bank (Stage 1 freeze + per-task specific B / block_scale)
 # ==============================================================================
-# After Stage 1: shared LoRA-B + specific LoRA-A are FROZEN (shared knowledge).
-# Stage 2+: specific LoRA-B + block_scale + action_head are per-task (bank).
-# During eval, old tasks load their bank to restore task-specific params.
-# This is the PI adaptation of CL-LoRA for VLA models.
+# PI-aligned v35:
+#   After Stage 1:
+#     LLaMA        → ALL LoRA frozen (shared A+B + specific A+B) — like frozen PaliGemma
+#     Action Head  → shared A+B + specific A frozen, specific B trainable
+#   Stage 2+:
+#     LLaMA        → ALL LoRA frozen (unchanged)
+#     Action Head  → specific B + block_scale reinit, trained per task → bank
+#   Bank: Action Head specific A + B + block_scale (action_head only, LLaMA unchanging)
 
 
-def freeze_stage1_params(model, freeze_specific_a: bool = True) -> None:
-    """V11-aligned: shared A+B both permanently frozen after Stage 1.
+def _iter_cl_lora(module) -> list:
+    """Collect all (name, CLLoRALinear) pairs from a module tree."""
+    result = []
+    for name, sub in module.named_modules():
+        if isinstance(sub, CLLoRALinear):
+            result.append((name, sub))
+    return result
 
-    Shared LoRA-A + LoRA-B: permanently frozen (complete anti-forgetting).
-    Specific LoRA-A: frozen if freeze_specific_a=True (orthogonal subspace protection).
+
+def freeze_stage1_params(model, freeze_specific_a: bool = True,
+                         action_head=None) -> None:
+    """PI-aligned v35: freeze ALL LLaMA LoRA + Action Head shared+specific A.
+
+    LLaMA: ALL LoRA frozen (shared A+B + specific A+B) — like frozen PaliGemma.
+    Action Head: shared A+B + specific A frozen; specific B stays trainable.
     """
-    frozen = 0
+    frozen_llama = 0
     for name, module in model.named_modules():
         if isinstance(module, CLLoRALinear):
-            if module.is_shared:
-                module.lora_a.requires_grad = False
-                module.lora_b.requires_grad = False
-                frozen += 2
-            elif freeze_specific_a:
-                module.lora_a.requires_grad = False
-                frozen += 1
-    extra = " + specific A" if freeze_specific_a else ""
-    print(f"[TaskBank] Stage 1 freeze: {frozen} params locked (shared A + shared B{extra})")
+            module.lora_a.requires_grad = False
+            module.lora_b.requires_grad = False
+            frozen_llama += 2
+
+    frozen_ah = 0
+    if action_head is not None:
+        ah = action_head.module if hasattr(action_head, 'module') else action_head
+        for name, module in ah.named_modules():
+            if isinstance(module, CLLoRALinear):
+                if module.is_shared:
+                    module.lora_a.requires_grad = False
+                    module.lora_b.requires_grad = False
+                    frozen_ah += 2
+                else:
+                    module.lora_a.requires_grad = False  # specific A frozen
+                    # specific B stays trainable
+                    frozen_ah += 1
+
+    print(f"[TaskBank] Stage 1 freeze: LLaMA={frozen_llama} locked (all LoRA), "
+          f"ActionHead={frozen_ah} (shared+specific A){' + specific A' if freeze_specific_a else ''}")
 
 
-def reinit_bank_for_new_task(model) -> None:
-    """Before training Stage 2+: reset specific LoRA-B and block_scale to zero.
+def reinit_bank_for_new_task(model, action_head=None) -> None:
+    """PI-aligned v35: reset Action Head specific LoRA-B + block_scale to zero.
 
-    Specific B starts fresh so the new task learns its own output mapping.
-    Block_scale starts at identity (effective_scale = 1.0 + 0.5*tanh(0) = 1.0).
+    LLaMA is fully frozen → no reinit needed.
+    Action Head specific B starts fresh for new task.
     """
-    for name, module in model.named_modules():
-        if isinstance(module, CLLoRALinear) and not module.is_shared:
-            nn.init.zeros_(module.lora_b)
-            if module.block_scale is not None:
-                nn.init.zeros_(module.block_scale)
-    print("[TaskBank] Reinitialized specific LoRA-B + block_scale for new task")
+    count = 0
+    if action_head is not None:
+        ah = action_head.module if hasattr(action_head, 'module') else action_head
+        for name, module in ah.named_modules():
+            if isinstance(module, CLLoRALinear) and not module.is_shared:
+                nn.init.zeros_(module.lora_b)
+                if module.block_scale is not None:
+                    nn.init.zeros_(module.block_scale)
+                count += 1
+    print(f"[TaskBank] Reinitialized {count} Action Head specific layers for new task")
 
 
 def save_task_bank(model, action_head, bank_dir: str, stage: int) -> None:
-    """Save per-task bank: specific LoRA-A + LoRA-B + block_scale."""
+    """PI-aligned v35: save Action Head specific A+B+block_scale to bank.
+
+    LLaMA is fully frozen → not banked.
+    Action Head specific params → per-task bank.
+    """
     import os
     os.makedirs(str(bank_dir), exist_ok=True)
     bank = {}
-    for name, module in model.named_modules():
-        if isinstance(module, CLLoRALinear) and not module.is_shared:
-            layer_key = name.replace('.', '_')
-            bank[f"{layer_key}.lora_a"] = module.lora_a.data.cpu().clone()
-            bank[f"{layer_key}.lora_b"] = module.lora_b.data.cpu().clone()
-            if module.block_scale is not None:
-                bank[f"{layer_key}.block_scale"] = module.block_scale.data.cpu().clone()
+    ah = action_head.module if hasattr(action_head, 'module') else action_head
+    if ah is not None:
+        for name, module in ah.named_modules():
+            if isinstance(module, CLLoRALinear) and not module.is_shared:
+                layer_key = name.replace('.', '_')
+                bank[f"ah.{layer_key}.lora_a"] = module.lora_a.data.cpu().clone()
+                bank[f"ah.{layer_key}.lora_b"] = module.lora_b.data.cpu().clone()
+                if module.block_scale is not None:
+                    bank[f"ah.{layer_key}.block_scale"] = module.block_scale.data.cpu().clone()
     path = os.path.join(str(bank_dir), f"task_{stage}_bank.pt")
     torch.save(bank, path)
-    print(f"[TaskBank] Saved stage {stage} bank ({len(bank)} tensors) → {path}")
+    print(f"[TaskBank] Saved stage {stage} bank ({len(bank)} Action Head tensors) → {path}")
 
 
 def load_task_bank(model, action_head, bank_path: str) -> None:
-    """Load per-task bank: restore specific LoRA-A + LoRA-B + block_scale."""
+    """PI-aligned v35: restore Action Head specific A+B+block_scale from bank."""
     bank = torch.load(bank_path, map_location='cpu', weights_only=True)
-    for name, module in model.named_modules():
-        if isinstance(module, CLLoRALinear) and not module.is_shared:
-            layer_key = name.replace('.', '_')
-            for suffix in ['lora_a', 'lora_b', 'block_scale']:
-                key = f"{layer_key}.{suffix}"
-                if key in bank:
-                    target = getattr(module, suffix, None)
-                    if target is not None:
-                        target.data.copy_(bank[key].to(target.device))
+    ah = action_head.module if hasattr(action_head, 'module') else action_head
+    if ah is not None:
+        for name, module in ah.named_modules():
+            if isinstance(module, CLLoRALinear) and not module.is_shared:
+                layer_key = name.replace('.', '_')
+                for suffix in ['lora_a', 'lora_b', 'block_scale']:
+                    key = f"ah.{layer_key}.{suffix}"
+                    if key in bank:
+                        target = getattr(module, suffix, None)
+                        if target is not None:
+                            target.data.copy_(bank[key].to(target.device))
+    print(f"[TaskBank] Loaded Action Head bank ({len(bank)} tensors)")

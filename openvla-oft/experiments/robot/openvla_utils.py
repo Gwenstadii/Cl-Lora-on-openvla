@@ -334,7 +334,8 @@ def get_vla(cfg: Any) -> torch.nn.Module:
                     print(f"[!] Failed to import load_task_bank from cl_lora. Check sys.path.")
                     load_task_bank = None
                 if load_task_bank is not None:
-                    load_task_bank(vla, None, bank_path)
+                    action_head_obj = action_head if 'action_head' in dir() else None
+                    load_task_bank(vla, action_head_obj, bank_path)
                     print(f"[*] Restored task {eval_task} bank ({os.path.getsize(bank_path)} bytes)")
                 else:
                     print(f"[!] load_task_bank unavailable")
@@ -528,7 +529,19 @@ def get_action_head(cfg: Any, llm_dim: int) -> Union[L1RegressionActionHead, Dif
 
     # Initialize appropriate action head based on configuration
     if cfg.use_l1_regression:
-        action_head = L1RegressionActionHead(input_dim=llm_dim, hidden_dim=llm_dim, action_dim=ACTION_DIM)
+        if hasattr(cfg, 'use_cl_lora') and cfg.use_cl_lora:
+            import sys, os
+            _cl_path = '/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/vla-scripts'
+            if _cl_path not in sys.path:
+                sys.path.insert(0, _cl_path)
+            from cl_lora import create_cl_lora_action_head
+            action_head = create_cl_lora_action_head(
+                input_dim=llm_dim, action_dim=ACTION_DIM,
+                rank=getattr(cfg, 'lora_rank', 16), shared_depth=2,
+                device=DEVICE, dtype=torch.bfloat16,
+            )
+        else:
+            action_head = L1RegressionActionHead(input_dim=llm_dim, hidden_dim=llm_dim, action_dim=ACTION_DIM)
     elif cfg.use_diffusion:
         action_head = DiffusionActionHead(
             input_dim=llm_dim, hidden_dim=llm_dim, action_dim=ACTION_DIM, num_diffusion_steps_train=cfg.num_diffusion_steps_train

@@ -161,17 +161,28 @@ def initialize_model(cfg: GenerateConfig):
 
     # Load action head if needed
     action_head = None
+    use_cl = hasattr(cfg, 'use_cl_lora') and cfg.use_cl_lora
     if cfg.use_l1_regression or cfg.use_diffusion:
-        action_head = get_action_head(cfg, model.llm_dim)
-        # PI Task Bank: restore per-task LoRA-B + block_scale (action_head stays at current)
+        if use_cl:
+            import sys as _sys
+            _sys.path.insert(0, '/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/vla-scripts')
+            from cl_lora import create_cl_lora_action_head
+            action_head = create_cl_lora_action_head(
+                input_dim=model.llm_dim, action_dim=7,
+                rank=getattr(cfg, 'lora_rank', 16), shared_depth=2,
+                device=DEVICE, dtype=torch.bfloat16,
+            )
+        else:
+            action_head = get_action_head(cfg, model.llm_dim)
+        # PI Task Bank: restore per-task Action Head specific A+B+block_scale
         if hasattr(cfg, 'eval_task_id') and cfg.eval_task_id > 0:
             bank_path = os.path.join(cfg.pretrained_checkpoint, f"task_{cfg.eval_task_id}_bank.pt")
             if os.path.exists(bank_path):
                 import sys as _sys
                 _sys.path.insert(0, '/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/vla-scripts')
                 from cl_lora import load_task_bank as _load_task_bank
-                _load_task_bank(model, None, bank_path)
-                print(f"[*] Restored task {cfg.eval_task_id} bank (LoRA-B + block_scale)")
+                _load_task_bank(model, action_head, bank_path)
+                print(f"[*] Restored task {cfg.eval_task_id} bank (Action Head A+B+block)")
 
     # Load noisy action projector if using diffusion
     noisy_action_projector = None
