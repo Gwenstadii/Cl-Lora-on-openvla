@@ -41,7 +41,7 @@ from experiments.robot.openvla_utils import (
     model_is_on_hf_hub,
     update_auto_map,
 )
-from cl_lora import (CLLoRALinear, inject_cl_lora_into_model, create_cl_lora_action_head,
+from cl_lora import (CLLoRALinear, inject_cl_lora_into_model, inject_cl_lora_into_action_head,
                       freeze_stage1_params, reinit_bank_for_new_task,
                       save_task_bank, load_task_bank)
 from replay_dataset import PrototypeReplayDataset
@@ -648,23 +648,22 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     # ---- Action head ----
     action_head = None
     if cfg.use_l1_regression:
-        if cfg.use_cl_lora:
-            action_head = create_cl_lora_action_head(
-                input_dim=vla.llm_dim if not isinstance(vla, DDP) else vla.module.llm_dim,
-                action_dim=ACTION_DIM,
-                rank=cfg.lora_rank,
-                shared_depth=2,
-                device=device_id,
-                dtype=torch.bfloat16,
-            )
-        else:
-            action_head = L1RegressionActionHead(
-                input_dim=vla.llm_dim if not isinstance(vla, DDP) else vla.module.llm_dim,
-                hidden_dim=vla.llm_dim if not isinstance(vla, DDP) else vla.module.llm_dim,
-                action_dim=ACTION_DIM,
-            ).to(torch.bfloat16).to(device_id)
+        llm_dim = vla.llm_dim if not isinstance(vla, DDP) else vla.module.llm_dim
+        action_head = L1RegressionActionHead(
+            input_dim=llm_dim, hidden_dim=llm_dim, action_dim=ACTION_DIM,
+        ).to(torch.bfloat16).to(device_id)
         if _pending_action_head_state is not None:
             action_head.load_state_dict(_pending_action_head_state, strict=False)
+        # PI-aligned v35: inject CL-LoRA into action head (shared_depth_ratio=0.5)
+        if cfg.use_cl_lora:
+            total_linear = sum(1 for m in action_head.modules() if isinstance(m, nn.Linear))
+            shared_ratio = 2.0 / max(1, total_linear)
+            action_head = inject_cl_lora_into_action_head(
+                action_head, rank=cfg.lora_rank, alpha=float(cfg.lora_rank),
+                shared_split_ratio=shared_ratio,
+                orthogonal_init=cfg.orthogonal_init,
+                use_block_scale=cfg.use_block_scale,
+            )
 
     # ---- PI Task Bank: freeze shared knowledge, reinit bank for new task ----
     if cfg.use_cl_lora and cfg.stage > 1 and cfg.previous_checkpoint_dir is not None and not cfg.skip_reinit:

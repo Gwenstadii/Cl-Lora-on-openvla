@@ -170,79 +170,49 @@ def inject_cl_lora_into_model(
 # PI-Aligned CL-LoRA Action Head (Action Expert)
 # ==============================================================================
 
-class CLLoRAActionHead(nn.Module):
-    """PI-aligned Action Expert with CL-LoRA.
+def inject_cl_lora_into_action_head(action_head, rank, alpha, shared_split_ratio,
+                                     orthogonal_init, use_block_scale):
+    """Inject CL-LoRA into existing L1RegressionActionHead's Linear layers."""
+    linear_layers = []
+    for name, module in action_head.named_modules():
+        if isinstance(module, nn.Linear):
+            linear_layers.append((name, module, None))
 
-    Multi-layer MLP where each Linear layer is replaced with CLLoRALinear.
-    Shared layers (first shared_depth): frozen after Stage 1.
-    Specific layers (remaining): specific A frozen after Stage 1, specific B per-task (bank).
+    total = len(linear_layers)
+    if total == 0:
+        print("[CL-LoRA AH] No Linear layers found in action head, skipping")
+        return action_head
 
-    PI mapping:
-      Shared layers ≈ Action Expert shared LoRA (frozen)
-      Specific layers ≈ Action Expert specific LoRA (A frozen, B banked)
-    """
+    shared_depth_count = max(1, int(total * shared_split_ratio))
+    print(f"\n--- Injecting CL-LoRA into Action Head ---")
+    print(f"Linear layers: {total}")
+    print(f"Shared layers: 0 to {shared_depth_count - 1}")
+    print(f"Specific layers: {shared_depth_count} to {total - 1}")
 
-    def __init__(
-        self,
-        input_dim: int = 4096,
-        hidden_dims: list = None,
-        action_dim: int = 7,
-        rank: int = 16,
-        alpha: float = 16.0,
-        shared_depth: int = 2,
-        orthogonal_init: bool = True,
-        use_block_scale: bool = True,
-    ):
-        super().__init__()
-        if hidden_dims is None:
-            hidden_dims = [4096, 2048, 1024]
-        dims = [input_dim] + list(hidden_dims) + [1]  # output 1 scalar per position
-        self.num_layers = len(dims) - 1
-
-        self.layers = nn.ModuleList()
-        for i in range(self.num_layers):
-            is_shared = i < shared_depth
-            linear = nn.Linear(dims[i], dims[i + 1])
-            cl_lora = CLLoRALinear(
-                base_layer=linear,
-                rank=rank,
-                alpha=alpha,
-                is_shared=is_shared,
-                orthogonal_init=orthogonal_init,
-                freeze_a=True,
-                use_block_scale=(not is_shared and use_block_scale),
-            )
-            self.layers.append(cl_lora)
-
-        self.act = nn.SiLU()
-        self.shared_depth = shared_depth
-        self.input_dim = input_dim
-        self.action_dim = action_dim
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, N, _ = x.shape  # N = NUM_ACTIONS_CHUNK * ACTION_DIM (e.g. 8*7=56)
-        for i, layer in enumerate(self.layers):
-            x = layer(x)
-            if i < self.num_layers - 1:
-                x = self.act(x)
-        return x.reshape(B, -1, self.action_dim)  # [B, 56, 1] → [B, 8, 7]
-
-    def predict_action(self, x: torch.Tensor) -> torch.Tensor:
-        """Interface expected by OpenVLA modeling_prismatic.py"""
-        return self.forward(x.to(self.layers[0].weight.dtype))
-
-
-def inject_cl_lora_into_action_head(action_head, rank, alpha, shared_depth,
-                                     orthogonal_init, use_block_scale, device):
-    """Replace all Linear layers in action head with CLLoRALinear."""
     replaced = 0
-    for i, layer in enumerate(list(action_head.layers)):
-        if isinstance(layer, CLLoRALinear):
-            continue  # already injected
-    # CLLoRAActionHead already creates CLLoRALinear layers in __init__
-    # This function is a no-op for CLLoRAActionHead (layers are already CL-LoRA)
-    print(f"[CL-LoRA] Action Head ready: {action_head.num_layers} layers, "
-          f"shared_depth={shared_depth}, rank={rank}")
+    for idx, (name, module, _) in enumerate(linear_layers):
+        is_shared = idx < shared_depth_count
+        parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
+        child_name = name.split('.')[-1]
+
+        target = action_head
+        if parent_name:
+            for part in parent_name.split('.'):
+                target = getattr(target, part)
+
+        cl_lora = CLLoRALinear(
+            base_layer=module,
+            rank=rank, alpha=alpha,
+            is_shared=is_shared,
+            orthogonal_init=orthogonal_init,
+            freeze_a=True,
+            use_block_scale=(not is_shared and use_block_scale),
+        ).to(module.weight.device).to(module.weight.dtype)
+
+        setattr(target, child_name, cl_lora)
+        replaced += 1
+
+    print(f"Replaced {replaced} Linear layers in Action Head\n")
     return action_head
 
 
@@ -253,26 +223,17 @@ def create_cl_lora_action_head(
     shared_depth: int = 2,
     device=None,
     dtype=torch.bfloat16,
-) -> CLLoRAActionHead:
-    """Create a PI-aligned CLLoRAActionHead."""
-    ah = CLLoRAActionHead(
-        input_dim=input_dim,
-        hidden_dims=[2048, 2048, 1024],
-        action_dim=action_dim,
-        rank=rank,
-        alpha=float(rank),
-        shared_depth=shared_depth,
-        orthogonal_init=True,
-        use_block_scale=True,
-    )
+):
+    """DEPRECATED: Use inject_cl_lora_into_action_head on L1RegressionActionHead instead."""
+    from prismatic.models.action_heads import L1RegressionActionHead
+    ah = L1RegressionActionHead(input_dim=input_dim, hidden_dim=input_dim, action_dim=action_dim)
     if device is not None:
         ah = ah.to(device)
     ah = ah.to(dtype)
-    n_shared = shared_depth
-    n_specific = ah.num_layers - shared_depth
-    n_bank = n_specific * 3  # lora_a + lora_b + block_scale per specific layer
-    print(f"[CL-LoRA Action Head] {ah.num_layers} layers ({n_shared} shared + {n_specific} specific), "
-          f"{n_bank} banked params, rank={rank}")
+    total_linear = sum(1 for m in ah.modules() if isinstance(m, nn.Linear))
+    shared_ratio = shared_depth / max(1, total_linear)
+    ah = inject_cl_lora_into_action_head(ah, rank, float(rank), shared_ratio,
+                                          True, True)
     return ah
 
 
