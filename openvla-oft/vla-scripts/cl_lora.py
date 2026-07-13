@@ -220,11 +220,12 @@ class CLLoRAActionHead(nn.Module):
         self.action_dim = action_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, _ = x.shape  # N = NUM_ACTIONS_CHUNK * ACTION_DIM (e.g. 8*7=56)
         for i, layer in enumerate(self.layers):
             x = layer(x)
             if i < self.num_layers - 1:
                 x = self.act(x)
-        return x.squeeze(-1)  # [B, N, 1] → [B, N]
+        return x.reshape(B, -1, self.action_dim)  # [B, 56, 1] → [B, 8, 7]
 
     def predict_action(self, x: torch.Tensor) -> torch.Tensor:
         """Interface expected by OpenVLA modeling_prismatic.py"""
