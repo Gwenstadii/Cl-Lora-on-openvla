@@ -101,6 +101,7 @@ class GenerateConfig:
     num_open_loop_steps: int = 8                     # Number of actions to execute open-loop before requerying policy
 
     lora_rank: int = 32                              # Rank of LoRA weight matrix (MAKE SURE THIS MATCHES TRAINING!)
+    use_cl_lora: bool = False                        # Use CL-LoRA CLLoRAActionHead (PI-aligned v35+)
     eval_task_id: int = 0                            # (v7 PI bank) Which task bank: 1=A,2=B,3=C. 0=latest.
 
     unnorm_key: Union[str, Path] = ""                # Action un-normalization key
