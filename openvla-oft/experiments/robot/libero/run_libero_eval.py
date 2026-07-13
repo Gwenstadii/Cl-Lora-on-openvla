@@ -171,7 +171,7 @@ def initialize_model(cfg: GenerateConfig):
             action_head = create_cl_lora_action_head(
                 input_dim=model.llm_dim, action_dim=7,
                 rank=getattr(cfg, 'lora_rank', 16), shared_depth=2,
-                device=DEVICE, dtype=torch.bfloat16,
+                device="cuda:0",
             )
         else:
             action_head = get_action_head(cfg, model.llm_dim)
