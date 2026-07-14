@@ -101,7 +101,6 @@ class GenerateConfig:
     num_open_loop_steps: int = 8                     # Number of actions to execute open-loop before requerying policy
 
     lora_rank: int = 32                              # Rank of LoRA weight matrix (MAKE SURE THIS MATCHES TRAINING!)
-    use_cl_lora: bool = False                        # Use CL-LoRA CLLoRAActionHead (PI-aligned v35+)
     eval_task_id: int = 0                            # (v7 PI bank) Which task bank: 1=A,2=B,3=C. 0=latest.
 
     unnorm_key: Union[str, Path] = ""                # Action un-normalization key
@@ -162,31 +161,17 @@ def initialize_model(cfg: GenerateConfig):
 
     # Load action head if needed
     action_head = None
-    use_cl = hasattr(cfg, 'use_cl_lora') and cfg.use_cl_lora
     if cfg.use_l1_regression or cfg.use_diffusion:
         action_head = get_action_head(cfg, model.llm_dim)
-        if use_cl:
-            import sys as _sys
-            _sys.path.insert(0, '/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/vla-scripts')
-            from cl_lora import inject_cl_lora_into_action_head
-            import torch.nn as _nn
-            total_l = sum(1 for m in action_head.modules() if isinstance(m, _nn.Linear))
-            sr = 2.0 / max(1, total_l)
-            action_head = inject_cl_lora_into_action_head(
-                action_head, rank=getattr(cfg, 'lora_rank', 16),
-                alpha=float(getattr(cfg, 'lora_rank', 16)),
-                shared_split_ratio=sr,
-                orthogonal_init=True, use_block_scale=True,
-            )
-        # PI Task Bank: restore per-task Action Head specific A+B+block_scale
+        # PI Task Bank: restore per-task LoRA-B + block_scale (action_head stays at current)
         if hasattr(cfg, 'eval_task_id') and cfg.eval_task_id > 0:
             bank_path = os.path.join(cfg.pretrained_checkpoint, f"task_{cfg.eval_task_id}_bank.pt")
             if os.path.exists(bank_path):
                 import sys as _sys
                 _sys.path.insert(0, '/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/vla-scripts')
                 from cl_lora import load_task_bank as _load_task_bank
-                _load_task_bank(model, action_head, bank_path)
-                print(f"[*] Restored task {cfg.eval_task_id} bank (Action Head A+B+block)")
+                _load_task_bank(model, None, bank_path)
+                print(f"[*] Restored task {cfg.eval_task_id} bank (LoRA-B + block_scale)")
 
     # Load noisy action projector if using diffusion
     noisy_action_projector = None

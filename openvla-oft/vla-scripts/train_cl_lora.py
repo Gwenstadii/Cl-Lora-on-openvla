@@ -41,7 +41,7 @@ from experiments.robot.openvla_utils import (
     model_is_on_hf_hub,
     update_auto_map,
 )
-from cl_lora import (CLLoRALinear, inject_cl_lora_into_model, inject_cl_lora_into_action_head,
+from cl_lora import (CLLoRALinear, inject_cl_lora_into_model,
                       freeze_stage1_params, reinit_bank_for_new_task,
                       save_task_bank, load_task_bank)
 from replay_dataset import PrototypeReplayDataset
@@ -136,7 +136,6 @@ class TrainCLConfig:
     # ---- Stage management ----
     stage: int = 1
     skip_reinit: bool = False
-    freeze_action_head: bool = False
     previous_checkpoint_dir: Optional[str] = None
     previous_checkpoint_step: Optional[int] = None
 
@@ -645,38 +644,12 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         _pending_action_head_state = None
         _pending_vision_state = None
 
-    # ---- Action head ----
-    action_head = None
-    if cfg.use_l1_regression:
-        llm_dim = vla.llm_dim if not isinstance(vla, DDP) else vla.module.llm_dim
-        action_head = L1RegressionActionHead(
-            input_dim=llm_dim, hidden_dim=llm_dim, action_dim=ACTION_DIM,
-        ).to(torch.bfloat16).to(device_id)
-        if _pending_action_head_state is not None:
-            action_head.load_state_dict(_pending_action_head_state, strict=False)
-        # PI-aligned v35: inject CL-LoRA into action head (shared_depth_ratio=0.5)
-        if cfg.use_cl_lora:
-            total_linear = sum(1 for m in action_head.modules() if isinstance(m, nn.Linear))
-            shared_ratio = 2.0 / max(1, total_linear)
-            action_head = inject_cl_lora_into_action_head(
-                action_head, rank=cfg.lora_rank, alpha=float(cfg.lora_rank),
-                shared_split_ratio=shared_ratio,
-                orthogonal_init=cfg.orthogonal_init,
-                use_block_scale=cfg.use_block_scale,
-            )
-
     # ---- PI Task Bank: freeze shared knowledge, reinit bank for new task ----
     if cfg.use_cl_lora and cfg.stage > 1 and cfg.previous_checkpoint_dir is not None and not cfg.skip_reinit:
-        freeze_stage1_params(vla, freeze_specific_a=cfg.freeze_specific_a,
-                             action_head=action_head)
-        reinit_bank_for_new_task(vla, action_head=action_head)
+        freeze_stage1_params(vla, freeze_specific_a=cfg.freeze_specific_a)
+        reinit_bank_for_new_task(vla)
         lora_trainable = sum(p.numel() for p in vla.parameters() if p.requires_grad)
-        if action_head is not None:
-            ah_trainable = sum(p.numel() for p in action_head.parameters() if p.requires_grad)
-        else:
-            ah_trainable = 0
-        print(f"[TaskBank] Stage {cfg.stage} trainable after freeze+reinit: "
-              f"LLaMA={lora_trainable:,}, ActionHead={ah_trainable:,}")
+        print(f"[TaskBank] Stage {cfg.stage} trainable after freeze+reinit: {lora_trainable:,}")
 
     # ---- FiLM ----
     if cfg.use_film:
@@ -698,8 +671,16 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     if cfg.use_proprio:
         raise NotImplementedError("Proprio not yet implemented for CL-LoRA. Set --use_proprio=False.")
 
-    # ---- Wrap action_head in DDP ----
-    if action_head is not None:
+    # ---- Action head ----
+    action_head = None
+    if cfg.use_l1_regression:
+        action_head = L1RegressionActionHead(
+            input_dim=vla.module.llm_dim,
+            hidden_dim=vla.module.llm_dim,
+            action_dim=ACTION_DIM,
+        ).to(torch.bfloat16).to(device_id)
+        if _pending_action_head_state is not None:
+            action_head.load_state_dict(_pending_action_head_state)
         action_head = wrap_ddp(action_head, device_id)
         count_parameters(action_head, "action_head")
 
@@ -983,13 +964,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     # PI Task Bank: freeze after Stage 1, save bank each stage, copy old banks forward
     if cfg.use_cl_lora and distributed_state.is_main_process:
         if cfg.stage == 1:
-            freeze_stage1_params(vla.module, freeze_specific_a=cfg.freeze_specific_a,
-                                 action_head=action_head.module if action_head is not None else None)
-            if cfg.freeze_action_head and action_head is not None:
-                ah = action_head.module if hasattr(action_head, 'module') else action_head
-                for p in ah.parameters():
-                    p.requires_grad = False
-                print(f"[ActionHead] Frozen after Stage 1")
+            freeze_stage1_params(vla.module, freeze_specific_a=cfg.freeze_specific_a)
         # Copy old task banks from previous checkpoint
         if cfg.previous_checkpoint_dir is not None:
             import glob as _g; import shutil as _sh
