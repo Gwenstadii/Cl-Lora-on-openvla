@@ -211,14 +211,13 @@ def reinit_bank_for_new_task(model) -> None:
 
 
 def save_task_bank(model, action_head, bank_dir: str, stage: int) -> None:
-    """Save per-task bank: specific LoRA-A + LoRA-B + block_scale."""
+    """Save per-task bank: specific LoRA-B + block_scale only."""
     import os
     os.makedirs(str(bank_dir), exist_ok=True)
     bank = {}
     for name, module in model.named_modules():
         if isinstance(module, CLLoRALinear) and not module.is_shared:
             layer_key = name.replace('.', '_')
-            bank[f"{layer_key}.lora_a"] = module.lora_a.data.cpu().clone()
             bank[f"{layer_key}.lora_b"] = module.lora_b.data.cpu().clone()
             if module.block_scale is not None:
                 bank[f"{layer_key}.block_scale"] = module.block_scale.data.cpu().clone()
