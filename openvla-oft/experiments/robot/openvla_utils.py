@@ -260,7 +260,7 @@ def get_vla(cfg: Any) -> torch.nn.Module:
     import sys
     import torch
     # 确保能找到我们的 cl_lora 注入函数
-    sys.path.append("/root/autodl-tmp/openvla-oft/vla-scripts")
+    sys.path.append("/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/vla-scripts")
     try:
         from cl_lora import inject_cl_lora_into_model
     except ImportError:
