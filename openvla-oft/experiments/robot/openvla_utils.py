@@ -306,17 +306,20 @@ def get_vla(cfg: Any) -> torch.nn.Module:
             cl_rank = cl_cfg.get("lora_rank", 32)
             cl_alpha = cl_cfg.get("alpha", min(cl_rank, 16))
             cl_shared_ratio = cl_cfg.get("shared_split_ratio", 0.5)
+            cl_first_lora = cl_cfg.get("first_lora_layer", 0)
         else:
             cl_rank = 32
             cl_alpha = cl_rank
             cl_shared_ratio = 0.5
-        print(f"[*] CL-LoRA config: rank={cl_rank}, alpha={cl_alpha}, shared_ratio={cl_shared_ratio}")
+            cl_first_lora = 0
+        print(f"[*] CL-LoRA config: rank={cl_rank}, alpha={cl_alpha}, shared_ratio={cl_shared_ratio}, first_lora_layer={cl_first_lora}")
         vla = inject_cl_lora_into_model(
             vla,
             rank=cl_rank,
             alpha=cl_alpha,
             dropout=0.0,
             shared_split_ratio=cl_shared_ratio,
+            first_lora_layer=cl_first_lora,
         )
         print("[*] Loading CL-LoRA weights...")
         cl_state_dict = torch.load(cl_lora_path, map_location="cpu")

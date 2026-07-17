@@ -116,6 +116,7 @@ class TrainCLConfig:
     freeze_a: bool = True
     use_block_scale: bool = True
     freeze_specific_a: bool = True             # v7: freeze specific A after Stage 1. Set False for cross-domain.
+    first_lora_layer: int = 0                  # PI action-expert: only inject LoRA from this layer onward
     clip_weight: float = 1.0
     merge_lora_during_training: bool = False
 
@@ -584,7 +585,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     # ---- CL-LoRA injection ----
     if cfg.use_cl_lora:
         total_layers = 32
-        shared_split_ratio = max(1, cfg.shared_depth) / total_layers
+        injected_layers = total_layers - cfg.first_lora_layer
+        shared_split_ratio = max(1, cfg.shared_depth) / total_layers  # keep backward compat
         vla = inject_cl_lora_into_model(
             vla,
             rank=cfg.lora_rank,
@@ -594,8 +596,9 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             orthogonal_init=cfg.orthogonal_init,
             freeze_a=cfg.freeze_a,
             use_block_scale=cfg.use_block_scale,
+            first_lora_layer=cfg.first_lora_layer,
         )
-        print(f"[CL-LoRA] Injected with shared_depth={cfg.shared_depth}, rank={cfg.lora_rank}")
+        print(f"[CL-LoRA] Injected with shared_depth={cfg.shared_depth}, rank={cfg.lora_rank}, first_lora_layer={cfg.first_lora_layer}")
 
         # ---- PI 冻结原则：冻结所有主干，仅保留 LoRA + action_head 可训 ----
         # Freeze ALL parameters first, then selectively unfreeze LoRA params
@@ -949,6 +952,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             "orthogonal_init": cfg.orthogonal_init,
             "freeze_a": cfg.freeze_a,
             "use_block_scale": cfg.use_block_scale,
+            "first_lora_layer": cfg.first_lora_layer,
         }
         with open(final_dir / "cl_lora_config.json", "w") as _f:
             _json.dump(cl_config, _f)

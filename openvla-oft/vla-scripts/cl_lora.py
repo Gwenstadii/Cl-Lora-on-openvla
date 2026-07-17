@@ -105,8 +105,13 @@ def inject_cl_lora_into_model(
     orthogonal_init: bool = True,
     freeze_a: bool = True,
     use_block_scale: bool = True,
+    first_lora_layer: int = 0,
 ):
     """Inject CL-LoRA into LlamaDecoderLayer attention + FFN linear layers ONLY.
+
+    first_lora_layer (default 0): only inject LoRA starting from this layer index.
+      Layers < first_lora_layer are left as bare frozen Linear (no LoRA at all).
+      This enables a PI-style "action expert": first_lora_layer=28 → only L28-31 have LoRA.
 
     Matches PI's injection scope exactly:
       - attn → q_proj, k_proj, v_proj, o_proj
@@ -124,20 +129,31 @@ def inject_cl_lora_into_model(
     total_depth = len(llama_layers)
     if total_depth == 0:
         raise RuntimeError("No LlamaDecoderLayer found in model. Check model architecture.")
-    shared_depth_count = max(1, int(total_depth * shared_split_ratio))
+
+    # Only layers >= first_lora_layer get LoRA
+    injected_depth = total_depth - first_lora_layer
+    if injected_depth <= 0:
+        raise RuntimeError(f"first_lora_layer={first_lora_layer} >= total_depth={total_depth}. No layers to inject.")
+    shared_depth_count = first_lora_layer + max(1, int(injected_depth * shared_split_ratio))
 
     print(f"\n--- Injecting CL-LoRA (PI scope: decoder attn + ffn only) ---")
     print(f"LlamaDecoderLayer depth: {total_depth}")
-    print(f"Shared layers (frozen A):    0 to {shared_depth_count - 1}")
-    print(f"Specific layers (learnable):  {shared_depth_count} to {total_depth - 1}")
-    print(f"Vision backbone:              UNTOUCHED (frozen)")
-    print(f"lm_head / projector:          UNTOUCHED (frozen)\n")
+    print(f"Bare layers (no LoRA):      0 to {first_lora_layer - 1}" if first_lora_layer > 0 else "")
+    print(f"Shared layers (frozen A):    {first_lora_layer} to {shared_depth_count - 1}")
+    print(f"Specific layers (learnable): {shared_depth_count} to {total_depth - 1}")
+    print(f"Vision backbone:             UNTOUCHED (frozen)")
+    print(f"lm_head / projector:         UNTOUCHED (frozen)\n")
 
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                       "gate_proj", "up_proj", "down_proj"]
     replaced_count = 0
+    skipped_count = 0
 
     for layer_idx, (layer_name, layer_module) in enumerate(llama_layers):
+        if layer_idx < first_lora_layer:
+            skipped_count += 7  # 7 modules per layer
+            continue  # bare layer, no LoRA
+
         is_shared = layer_idx < shared_depth_count
 
         for name, module in layer_module.named_modules():
@@ -162,8 +178,12 @@ def inject_cl_lora_into_model(
                 setattr(parent_module, child_name, cl_lora_layer)
                 replaced_count += 1
 
-    print(f"Replaced {replaced_count} Linear layers with CLLoRALinear.")
-    print(f"(Expected: {total_depth} layers × 7 modules = {total_depth * 7})\n")
+    expected = injected_depth * 7
+    print(f"Replaced {replaced_count} Linear layers with CLLoRALinear (expected {expected}).")
+    if first_lora_layer > 0:
+        print(f"Skipped {first_lora_layer * 7} layers in bare backbone (no LoRA).\n")
+    else:
+        print()
     return model
 
 
@@ -211,7 +231,7 @@ def reinit_bank_for_new_task(model) -> None:
 
 
 def save_task_bank(model, action_head, bank_dir: str, stage: int) -> None:
-    """Save per-task bank: specific LoRA-B + block_scale only."""
+    """Save per-task bank: specific LoRA-B + block_scale + action_head."""
     import os
     os.makedirs(str(bank_dir), exist_ok=True)
     bank = {}
@@ -221,20 +241,32 @@ def save_task_bank(model, action_head, bank_dir: str, stage: int) -> None:
             bank[f"{layer_key}.lora_b"] = module.lora_b.data.cpu().clone()
             if module.block_scale is not None:
                 bank[f"{layer_key}.block_scale"] = module.block_scale.data.cpu().clone()
+    if action_head is not None:
+        for k, v in action_head.state_dict().items():
+            bank[f"action_head.{k}"] = v.cpu().clone()
     path = os.path.join(str(bank_dir), f"task_{stage}_bank.pt")
     torch.save(bank, path)
     print(f"[TaskBank] Saved stage {stage} bank ({len(bank)} tensors) → {path}")
 
 
 def load_task_bank(model, action_head, bank_path: str) -> None:
-    """Load per-task bank: restore specific LoRA-A + LoRA-B + block_scale."""
+    """Load per-task bank: restore specific LoRA-B + block_scale + action_head."""
     bank = torch.load(bank_path, map_location='cpu', weights_only=True)
     for name, module in model.named_modules():
         if isinstance(module, CLLoRALinear) and not module.is_shared:
             layer_key = name.replace('.', '_')
-            for suffix in ['lora_a', 'lora_b', 'block_scale']:
+            for suffix in ['lora_b', 'block_scale']:
                 key = f"{layer_key}.{suffix}"
                 if key in bank:
                     target = getattr(module, suffix, None)
                     if target is not None:
                         target.data.copy_(bank[key].to(target.device))
+    if action_head is not None:
+        ah_state = {k.replace('action_head.', ''): v
+                    for k, v in bank.items() if k.startswith('action_head.')}
+        if ah_state:
+            current_keys = set(action_head.state_dict().keys())
+            if not set(ah_state.keys()).intersection(current_keys):
+                ah_state = {k.replace('module.', ''): v for k, v in ah_state.items()}
+            action_head.load_state_dict(ah_state, strict=False)
+            print(f"[TaskBank] Loaded action_head from bank")
