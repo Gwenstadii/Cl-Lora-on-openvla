@@ -187,6 +187,43 @@ def inject_cl_lora_into_model(
     return model
 
 
+def inject_cl_lora_into_action_head(
+    action_head: nn.Module,
+    rank: int = 16,
+    alpha: float = 16.0,
+    dropout: float = 0.0,
+    orthogonal_init: bool = True,
+    freeze_a: bool = True,
+    use_block_scale: bool = True,
+) -> nn.Module:
+    """Inject CL-LoRA into action_head's Linear layers (all as specific layers).
+
+    Matches PI's action-expert LoRA injection. The action_head Linear layers
+    get CLLoRALinear wrappers with is_shared=False → per-task bank.
+    """
+    replaced = 0
+    for name, module in action_head.named_modules():
+        if isinstance(module, nn.Linear):
+            parent = action_head
+            parts = name.rsplit('.', 1)
+            child = parts[-1]
+            if len(parts) > 1:
+                for p in parts[0].split('.'):
+                    parent = getattr(parent, p)
+            cl = CLLoRALinear(
+                base_layer=module,
+                rank=rank, alpha=alpha, dropout=dropout,
+                is_shared=False,  # all action_head layers are specific
+                orthogonal_init=orthogonal_init,
+                freeze_a=freeze_a,
+                use_block_scale=use_block_scale,
+            ).to(module.weight.device).to(module.weight.dtype)
+            setattr(parent, child, cl)
+            replaced += 1
+    print(f"[CL-LoRA] Injected {replaced} Linear layers in action_head.")
+    return action_head
+
+
 # ==============================================================================
 # PI-Style Task Bank (Stage 1 freeze + per-task specific B / block_scale)
 # ==============================================================================
@@ -196,37 +233,48 @@ def inject_cl_lora_into_model(
 # This is the PI adaptation of CL-LoRA for VLA models.
 
 
-def freeze_stage1_params(model, freeze_specific_a: bool = True) -> None:
+def _freeze_and_reinit_modules(modules, freeze_specific_a: bool, reinit: bool) -> int:
+    """Apply freeze + optional reinit to a collection of CLLoRALinear modules."""
+    frozen = 0
+    for module in modules:
+        if not isinstance(module, CLLoRALinear):
+            continue
+        if module.is_shared:
+            module.lora_a.requires_grad = False
+            module.lora_b.requires_grad = False
+            frozen += 2
+        elif freeze_specific_a:
+            module.lora_a.requires_grad = False
+            frozen += 1
+        if reinit and not module.is_shared:
+            nn.init.zeros_(module.lora_b)
+            if module.block_scale is not None:
+                nn.init.zeros_(module.block_scale)
+    return frozen
+
+
+def freeze_stage1_params(model, freeze_specific_a: bool = True, action_head=None) -> None:
     """V11-aligned: shared A+B both permanently frozen after Stage 1.
 
     Shared LoRA-A + LoRA-B: permanently frozen (complete anti-forgetting).
     Specific LoRA-A: frozen if freeze_specific_a=True (orthogonal subspace protection).
     """
-    frozen = 0
-    for name, module in model.named_modules():
-        if isinstance(module, CLLoRALinear):
-            if module.is_shared:
-                module.lora_a.requires_grad = False
-                module.lora_b.requires_grad = False
-                frozen += 2
-            elif freeze_specific_a:
-                module.lora_a.requires_grad = False
-                frozen += 1
+    frozen = _freeze_and_reinit_modules(model.modules(), freeze_specific_a, reinit=False)
+    if action_head is not None:
+        frozen += _freeze_and_reinit_modules(action_head.modules(), freeze_specific_a, reinit=False)
     extra = " + specific A" if freeze_specific_a else ""
     print(f"[TaskBank] Stage 1 freeze: {frozen} params locked (shared A + shared B{extra})")
 
 
-def reinit_bank_for_new_task(model) -> None:
+def reinit_bank_for_new_task(model, action_head=None) -> None:
     """Before training Stage 2+: reset specific LoRA-B and block_scale to zero.
 
     Specific B starts fresh so the new task learns its own output mapping.
     Block_scale starts at identity (effective_scale = 1.0 + 0.5*tanh(0) = 1.0).
     """
-    for name, module in model.named_modules():
-        if isinstance(module, CLLoRALinear) and not module.is_shared:
-            nn.init.zeros_(module.lora_b)
-            if module.block_scale is not None:
-                nn.init.zeros_(module.block_scale)
+    _freeze_and_reinit_modules(model.modules(), freeze_specific_a=False, reinit=True)
+    if action_head is not None:
+        _freeze_and_reinit_modules(action_head.modules(), freeze_specific_a=False, reinit=True)
     print("[TaskBank] Reinitialized specific LoRA-B + block_scale for new task")
 
 

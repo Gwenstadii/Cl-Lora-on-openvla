@@ -42,6 +42,7 @@ from experiments.robot.openvla_utils import (
     update_auto_map,
 )
 from cl_lora import (CLLoRALinear, inject_cl_lora_into_model,
+                      inject_cl_lora_into_action_head,
                       freeze_stage1_params, reinit_bank_for_new_task,
                       save_task_bank, load_task_bank)
 from replay_dataset import PrototypeReplayDataset
@@ -684,10 +685,30 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             hidden_dim=vla.module.llm_dim,
             action_dim=ACTION_DIM,
         ).to(torch.bfloat16).to(device_id)
+        # PI-aligned: inject CL-LoRA into action_head Linear layers
+        if cfg.use_cl_lora:
+            action_head = inject_cl_lora_into_action_head(
+                action_head,
+                rank=cfg.lora_rank,
+                alpha=cfg.lora_rank,
+                orthogonal_init=cfg.orthogonal_init,
+                freeze_a=cfg.freeze_a,
+                use_block_scale=cfg.use_block_scale,
+            )
+            # Freeze base Linear weights, unfreeze LoRA params
+            for p in action_head.parameters():
+                p.requires_grad = False
+            for n, p in action_head.named_parameters():
+                if any(x in n for x in ['lora_a', 'lora_b', 'block_scale']):
+                    p.requires_grad = True
+            count_parameters(action_head, "action_head (CL-LoRA)")
+        # For Stage 2+: freeze specific A in action_head and reinit B
+        if cfg.use_cl_lora and cfg.stage > 1:
+            freeze_stage1_params(action_head, freeze_specific_a=cfg.freeze_specific_a)
+            reinit_bank_for_new_task(action_head)
         if _pending_action_head_state is not None:
-            action_head.load_state_dict(_pending_action_head_state)
+            action_head.load_state_dict(_pending_action_head_state, strict=False)
         action_head = wrap_ddp(action_head, device_id)
-        count_parameters(action_head, "action_head")
 
     noisy_action_projector = None
     if cfg.use_diffusion:
@@ -970,7 +991,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     # PI Task Bank: freeze after Stage 1, save bank each stage, copy old banks forward
     if cfg.use_cl_lora and distributed_state.is_main_process:
         if cfg.stage == 1:
-            freeze_stage1_params(vla.module, freeze_specific_a=cfg.freeze_specific_a)
+            freeze_stage1_params(vla.module, freeze_specific_a=cfg.freeze_specific_a,
+                                action_head=action_head.module if action_head is not None else None)
         # Copy old task banks from previous checkpoint
         if cfg.previous_checkpoint_dir is not None:
             import glob as _g; import shutil as _sh
