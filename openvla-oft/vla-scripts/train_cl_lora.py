@@ -928,6 +928,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                         "orthogonal_init": cfg.orthogonal_init,
                         "freeze_a": cfg.freeze_a,
                         "use_block_scale": cfg.use_block_scale,
+                        "first_lora_layer": cfg.first_lora_layer,
                     }
                     with open(checkpoint_dir / "cl_lora_config.json", "w") as _f:
                         _json.dump(cl_config, _f)
