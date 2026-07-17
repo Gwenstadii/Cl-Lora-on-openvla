@@ -529,9 +529,28 @@ def get_action_head(cfg: Any, llm_dim: int) -> Union[L1RegressionActionHead, Dif
     """
     assert not (cfg.use_l1_regression and cfg.use_diffusion), "Cannot use both L1 regression and diffusion action head!"
 
+    # Read CL-LoRA config to check if action_head needs LoRA injection
+    cl_config_path = os.path.join(cfg.pretrained_checkpoint, "cl_lora_config.json")
+    cl_cfg = {}
+    if os.path.exists(cl_config_path):
+        import json
+        with open(cl_config_path, 'r') as f:
+            cl_cfg = json.load(f)
+
     # Initialize appropriate action head based on configuration
     if cfg.use_l1_regression:
         action_head = L1RegressionActionHead(input_dim=llm_dim, hidden_dim=llm_dim, action_dim=ACTION_DIM)
+        if cl_cfg.get("first_lora_layer", 0) > 0:
+            # V38+: action_head has CL-LoRA, inject before loading checkpoint
+            from cl_lora import inject_cl_lora_into_action_head
+            action_head = inject_cl_lora_into_action_head(
+                action_head,
+                rank=cl_cfg.get("lora_rank", 32),
+                alpha=cl_cfg.get("alpha", 32),
+                orthogonal_init=cl_cfg.get("orthogonal_init", True),
+                freeze_a=cl_cfg.get("freeze_a", True),
+                use_block_scale=cl_cfg.get("use_block_scale", True),
+            )
     elif cfg.use_diffusion:
         action_head = DiffusionActionHead(
             input_dim=llm_dim, hidden_dim=llm_dim, action_dim=ACTION_DIM, num_diffusion_steps_train=cfg.num_diffusion_steps_train
