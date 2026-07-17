@@ -586,7 +586,9 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     if cfg.use_cl_lora:
         total_layers = 32
         injected_layers = total_layers - cfg.first_lora_layer
-        shared_split_ratio = max(1, cfg.shared_depth) / total_layers  # keep backward compat
+        if injected_layers <= 0:
+            raise ValueError(f"first_lora_layer={cfg.first_lora_layer} >= total_layers={total_layers}")
+        shared_split_ratio = max(1, cfg.shared_depth) / injected_layers
         vla = inject_cl_lora_into_model(
             vla,
             rank=cfg.lora_rank,
@@ -598,7 +600,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             use_block_scale=cfg.use_block_scale,
             first_lora_layer=cfg.first_lora_layer,
         )
-        print(f"[CL-LoRA] Injected with shared_depth={cfg.shared_depth}, rank={cfg.lora_rank}, first_lora_layer={cfg.first_lora_layer}")
+        print(f"[CL-LoRA] Injected {injected_layers} layers (L{cfg.first_lora_layer}-31), shared_depth={cfg.shared_depth}, rank={cfg.lora_rank}")
 
         # ---- PI 冻结原则：冻结所有主干，仅保留 LoRA + action_head 可训 ----
         # Freeze ALL parameters first, then selectively unfreeze LoRA params
