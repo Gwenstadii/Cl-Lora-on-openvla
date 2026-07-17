@@ -290,8 +290,12 @@ def save_task_bank(model, action_head, bank_dir: str, stage: int) -> None:
             if module.block_scale is not None:
                 bank[f"{layer_key}.block_scale"] = module.block_scale.data.cpu().clone()
     if action_head is not None:
-        for k, v in action_head.state_dict().items():
-            bank[f"action_head.{k}"] = v.cpu().clone()
+        for name, module in action_head.named_modules():
+            if isinstance(module, CLLoRALinear):
+                ah_key = name.replace('.', '_')
+                bank[f"action_head.{ah_key}.lora_b"] = module.lora_b.data.cpu().clone()
+                if module.block_scale is not None:
+                    bank[f"action_head.{ah_key}.block_scale"] = module.block_scale.data.cpu().clone()
     path = os.path.join(str(bank_dir), f"task_{stage}_bank.pt")
     torch.save(bank, path)
     print(f"[TaskBank] Saved stage {stage} bank ({len(bank)} tensors) → {path}")
@@ -310,11 +314,13 @@ def load_task_bank(model, action_head, bank_path: str) -> None:
                     if target is not None:
                         target.data.copy_(bank[key].to(target.device))
     if action_head is not None:
-        ah_state = {k.replace('action_head.', ''): v
-                    for k, v in bank.items() if k.startswith('action_head.')}
-        if ah_state:
-            current_keys = set(action_head.state_dict().keys())
-            if not set(ah_state.keys()).intersection(current_keys):
-                ah_state = {k.replace('module.', ''): v for k, v in ah_state.items()}
-            action_head.load_state_dict(ah_state, strict=False)
-            print(f"[TaskBank] Loaded action_head from bank")
+        for name, module in action_head.named_modules():
+            if isinstance(module, CLLoRALinear):
+                ah_key = name.replace('.', '_')
+                for suffix in ['lora_b', 'block_scale']:
+                    key = f"action_head.{ah_key}.{suffix}"
+                    if key in bank:
+                        target = getattr(module, suffix, None)
+                        if target is not None:
+                            target.data.copy_(bank[key].to(target.device))
+        print(f"[TaskBank] Loaded action_head LoRA from bank")
