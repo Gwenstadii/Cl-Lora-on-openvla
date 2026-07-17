@@ -579,11 +579,11 @@ def get_action_head(cfg: Any, llm_dim: int) -> Union[L1RegressionActionHead, Dif
             repo_id=cfg.pretrained_checkpoint, filename=model_path_to_action_head_name[cfg.pretrained_checkpoint]
         )
         state_dict = load_component_state_dict(action_head_path)
-        action_head.load_state_dict(state_dict)
+        action_head.load_state_dict(state_dict, strict=False)
     else:
         checkpoint_path = find_checkpoint_file(cfg.pretrained_checkpoint, "action_head")
         state_dict = load_component_state_dict(checkpoint_path)
-        action_head.load_state_dict(state_dict)
+        action_head.load_state_dict(state_dict, strict=False)
 
     return action_head
 
