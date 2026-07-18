@@ -170,8 +170,8 @@ def initialize_model(cfg: GenerateConfig):
                 import sys as _sys
                 _sys.path.insert(0, '/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/vla-scripts')
                 from cl_lora import load_task_bank as _load_task_bank
-                _load_task_bank(model, action_head, bank_path)
-                print(f"[*] Restored task {cfg.eval_task_id} bank (LoRA-B + block_scale + action_head)")
+                _load_task_bank(model, None, bank_path)
+                print(f"[*] Restored task {cfg.eval_task_id} bank (LoRA-B + block_scale, no action_head)")
 
     # Load noisy action projector if using diffusion
     noisy_action_projector = None
