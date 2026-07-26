@@ -199,10 +199,29 @@ def _uniform_frame_indices(num_frames, num_samples):
 # ==============================================================================
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-root-dir", default="/root/autodl-tmp/modified_libero_rlds")
+    parser.add_argument("--dataset-name", default="libero_spatial_no_noops")
+    parser.add_argument("--output-dir", default="/root/autodl-tmp/replay_buffers/taskA_uniform")
+    parser.add_argument("--target-num-samples", type=int, default=30)
+    parser.add_argument("--max-episodes", type=int, default=10)
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--match-budget-buffer-dir", default=None)
+    args = parser.parse_args()
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     np.set_printoptions(precision=4, suppress=True)
 
-    cfg = BuildUniformReplayBufferConfig()
+    cfg = BuildUniformReplayBufferConfig(
+        data_root_dir=args.data_root_dir,
+        dataset_name=args.dataset_name,
+        output_dir=args.output_dir,
+        overwrite=args.overwrite,
+        target_num_samples=args.target_num_samples,
+        match_budget_buffer_dir=args.match_budget_buffer_dir,
+        max_episodes=args.max_episodes,
+    )
 
     out_dir = pathlib.Path(cfg.output_dir).resolve()
     if out_dir.exists():
