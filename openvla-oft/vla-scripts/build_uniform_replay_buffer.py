@@ -262,8 +262,8 @@ def main():
         else:
             language_instruction = str(raw_inst)
 
-        if cfg.target_task_name not in language_instruction:
-            continue
+        # Note: uniform replay takes all episodes matching the dataset.
+        # target_task_name is not used for filtering (unlike prototype v2).
 
         episodes.append({
             'episode_index': ep_idx,
@@ -276,7 +276,7 @@ def main():
         episodes = episodes[:cfg.max_episodes]
 
     if not episodes:
-        raise ValueError(f"No episodes found for target_task_name={cfg.target_task_name!r}.")
+        raise ValueError(f"No episodes found in dataset '{cfg.dataset_name}' at '{cfg.data_root_dir}'.")
 
     lengths = [ep['num_frames'] for ep in episodes]
     num_candidate_frames = int(sum(lengths))
