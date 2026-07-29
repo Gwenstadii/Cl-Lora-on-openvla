@@ -271,6 +271,7 @@ try:
             return result_p, result_q
     
 except Exception as e:
+    CuroboPlanner = None  # will be replaced by fallback after MplibPlanner class
     print('[planner.py]: Something wrong happened when importing CuroboPlanner! Please check if Curobo is installed correctly. If the problem still exists, you can install Curobo from https://github.com/NVlabs/curobo manually.')
     print('Exception traceback:')
     traceback.print_exc()
@@ -432,3 +433,27 @@ class MplibPlanner:
         res["per_step"] = per_step  # dis per step
         res["result"] = vals
         return res
+
+
+# Fallback: when curobo is not installed, wrap MplibPlanner with CuroboPlanner API
+if "CuroboPlanner" not in dir() or CuroboPlanner is None:
+    class CuroboPlanner(MplibPlanner):
+        def __init__(self, robot_origion_pose, active_joints_name, all_joints,
+                     yml_path=None, scene=None):
+            self._joints_name = active_joints_name
+            self._all_joints = all_joints
+            self._yml_path = yml_path
+            # Minimal stub: won't be used by ALOHA tasks
+
+        def plan_path(self, now_val, target_pose, constraint_pose=None, arms_tag=None,
+                      use_point_cloud=False, use_attach=False, time_step=0.01):
+            return {"status": "curobo_unavailable", "position": [now_val], "gripper_trigger": []}
+
+        def plan_batch(self, curr_joint_pos, target_gripper_pose_list,
+                       constraint_pose=None, arms_tag=None):
+            return {"status": "curobo_unavailable"}
+
+        def plan_grippers(self, now_val, target_val):
+            num_step = 200
+            vals = np.linspace(now_val, target_val, num_step)
+            return {"num_step": num_step, "per_step": (target_val - now_val) / num_step, "result": vals}
