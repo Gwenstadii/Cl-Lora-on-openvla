@@ -660,14 +660,14 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     # ---- FiLM ----
     if cfg.use_film:
         count_parameters(vla.vision_backbone, "vla.vision_backbone (original)")
-        vla.model.vision_backbone = FiLMedPrismaticVisionBackbone(
-            vision_backbone=vla.model.vision_backbone,
+        vla.vision_backbone = FiLMedPrismaticVisionBackbone(
+            vision_backbone=vla.vision_backbone,
             llm_dim=vla.llm_dim,
         )
         count_parameters(vla.vision_backbone, "vla.vision_backbone (post-wrap)")
         if _pending_vision_state is not None:
-            vla.model.vision_backbone.load_state_dict(_pending_vision_state)
-        vla.model.vision_backbone = vla.model.vision_backbone.to(device_id)
+            vla.vision_backbone.load_state_dict(_pending_vision_state)
+        vla.vision_backbone = vla.vision_backbone.to(device_id)
 
     # ---- DDP ----
     vla = wrap_ddp(vla, device_id, find_unused=True)
