@@ -27,7 +27,10 @@ def load_instruction(instruction_dir, episode_idx):
     if not candidates:
         raise ValueError(f"No instructions found in {json_path}")
     return random.choice(candidates)
-def process_one_episode(input_path, output_path, episode_idx, instruction_dir, resize_size=256):
+def process_one_episode(input_path, output_path, instruction_dir, resize_size=256):
+    # Extract original episode index from filename: "episode5.hdf5" → 5
+    basename = os.path.basename(input_path)
+    orig_idx = int(basename.replace("episode", "").replace(".hdf5", ""))
     with h5py.File(input_path, "r") as f:
         action = f["joint_action/vector"][()]
         rel_action = np.zeros_like(action)
@@ -39,8 +42,8 @@ def process_one_episode(input_path, output_path, episode_idx, instruction_dir, r
         right = decode_and_resize_images(f["observation/right_camera/rgb"][()], size=resize_size)
         front = decode_and_resize_images(f["observation/front_camera/rgb"][()], size=resize_size)
 
-    # 读取 instruction JSON
-    json_path = os.path.join(instruction_dir, f"episode{episode_idx}.json")
+    # 读取 instruction JSON (using original episode index)
+    json_path = os.path.join(instruction_dir, f"episode{orig_idx}.json")
     with open(json_path, "r") as f:
         inst_data = json.load(f)
     seen_list = inst_data.get("seen", [])
@@ -82,7 +85,7 @@ def main(args):
             ep_name = f"episode_{i}.hdf5"
             out_path = os.path.join(out_dir, ep_name)
             try:
-                process_one_episode(ep, out_path, i, instruction_dir, resize_size=resize_size)
+                process_one_episode(ep, out_path, instruction_dir, resize_size=resize_size)
             except Exception as e:
                 print(f"[ERROR] Failed to process {ep}: {e}")
 

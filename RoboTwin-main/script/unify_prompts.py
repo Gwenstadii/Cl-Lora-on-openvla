@@ -49,25 +49,8 @@ def unify_task(task_name: str, prompt: str) -> None:
         with open(path, "r") as f:
             data = json.load(f)
 
-        if isinstance(data, dict):
-            # Overwrite instruction field(s)
-            if "instruction" in data:
-                data["instruction"] = prompt
-            if "instructions" in data:
-                data["instructions"] = [prompt]
-            if "seen" in data:
-                data["seen"] = [prompt]
-            if "unseen" in data:
-                data["unseen"] = [prompt]
-            # If none of the above, replace the entire dict
-            if not any(k in data for k in ["instruction", "instructions", "seen", "unseen"]):
-                data = {"instruction": prompt}
-        elif isinstance(data, list):
-            data = [prompt]
-        elif isinstance(data, str):
-            data = prompt
-        else:
-            data = {"instruction": prompt}
+        # Always output format: {"seen": [prompt]}  (compatible with preprocess_aloha.py)
+        data = {"seen": [prompt], "unseen": []}
 
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
