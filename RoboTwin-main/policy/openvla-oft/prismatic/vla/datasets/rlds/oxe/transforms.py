@@ -939,4 +939,8 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "aloha_place_dual_shoes":aloha_dataset_transform,
     "aloha_place_object_scale":aloha_dataset_transform,
     "aloha_stack_bowls_three_clean_builder":aloha_dataset_transform,
+    "aloha_handover_mic_clean":aloha_dataset_transform,
+    "aloha_grab_roller_clean":aloha_dataset_transform,
+    "aloha_stack_bowls_two_clean":aloha_dataset_transform,
+    "aloha_open_laptop_clean":aloha_dataset_transform,
 }

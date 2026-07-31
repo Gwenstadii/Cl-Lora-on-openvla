@@ -862,8 +862,48 @@ OXE_DATASET_CONFIGS = {
         "secondary": None,
         "wrist": None,
     },
-    "state_obs_keys": ["state"],  
-    "state_encoding": StateEncoding.JOINT_BIMANUAL,  
-    "action_encoding": ActionEncoding.JOINT_POS_BIMANUAL,  
+    "state_obs_keys": ["state"],
+    "state_encoding": StateEncoding.JOINT_BIMANUAL,
+    "action_encoding": ActionEncoding.JOINT_POS_BIMANUAL,
+    },
+    "aloha_handover_mic_clean": {
+    "image_obs_keys": {
+        "primary": "image", "secondary": "low_cam_image",
+        "left_wrist":"left_wrist_image", "right_wrist":"right_wrist_image",
+    },
+    "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+    "state_obs_keys": ["state"],
+    "state_encoding": StateEncoding.JOINT_BIMANUAL,
+    "action_encoding": ActionEncoding.JOINT_POS_BIMANUAL,
+    },
+    "aloha_grab_roller_clean": {
+    "image_obs_keys": {
+        "primary": "image", "secondary": "low_cam_image",
+        "left_wrist":"left_wrist_image", "right_wrist":"right_wrist_image",
+    },
+    "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+    "state_obs_keys": ["state"],
+    "state_encoding": StateEncoding.JOINT_BIMANUAL,
+    "action_encoding": ActionEncoding.JOINT_POS_BIMANUAL,
+    },
+    "aloha_stack_bowls_two_clean": {
+    "image_obs_keys": {
+        "primary": "image", "secondary": "low_cam_image",
+        "left_wrist":"left_wrist_image", "right_wrist":"right_wrist_image",
+    },
+    "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+    "state_obs_keys": ["state"],
+    "state_encoding": StateEncoding.JOINT_BIMANUAL,
+    "action_encoding": ActionEncoding.JOINT_POS_BIMANUAL,
+    },
+    "aloha_open_laptop_clean": {
+    "image_obs_keys": {
+        "primary": "image", "secondary": "low_cam_image",
+        "left_wrist":"left_wrist_image", "right_wrist":"right_wrist_image",
+    },
+    "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+    "state_obs_keys": ["state"],
+    "state_encoding": StateEncoding.JOINT_BIMANUAL,
+    "action_encoding": ActionEncoding.JOINT_POS_BIMANUAL,
     },
 }
