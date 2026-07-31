@@ -675,7 +675,12 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     # ---- Proprio projector ----
     proprio_projector = None
     if cfg.use_proprio:
-        raise NotImplementedError("Proprio not yet implemented for CL-LoRA. Set --use_proprio=False.")
+        proprio_projector = ProprioProjector(
+            llm_dim=vla.module.llm_dim,
+            proprio_dim=PROPRIO_DIM,
+        ).to(torch.bfloat16).to(device_id)
+        proprio_projector = wrap_ddp(proprio_projector, device_id)
+        count_parameters(proprio_projector, "proprio_projector")
 
     # ---- Action head ----
     action_head = None
