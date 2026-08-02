@@ -946,6 +946,10 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                     if action_head is not None:
                         torch.save(action_head.module.state_dict(), checkpoint_dir / f"action_head--{log_step}_checkpoint.pt")
 
+                    # Save vision backbone (FiLM params)
+                    if cfg.use_film:
+                        torch.save(vla.module.vision_backbone.state_dict(), checkpoint_dir / f"vision_backbone--{log_step}_checkpoint.pt")
+
                     # Save teacher snapshot (for next stage)
                     save_teacher_snapshot(vla.module, action_head.module if action_head is not None else None, checkpoint_dir, log_step)
 
@@ -990,6 +994,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         torch.save(cl_lora_state, final_dir / "cl_lora_adapter.pt")
         if action_head is not None:
             torch.save(action_head.module.state_dict(), final_dir / f"action_head--{cfg.max_steps}_checkpoint.pt")
+        if cfg.use_film:
+            torch.save(vla.module.vision_backbone.state_dict(), final_dir / f"vision_backbone--{cfg.max_steps}_checkpoint.pt")
         save_teacher_snapshot(vla.module, action_head.module if action_head is not None else None, final_dir, cfg.max_steps)
         save_dataset_statistics(train_dataset.dataset_statistics, final_dir)
         print(f"Final checkpoint saved → {final_dir}")
