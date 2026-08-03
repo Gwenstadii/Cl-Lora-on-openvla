@@ -150,16 +150,22 @@ class Model:
                 )
                 self.action_head = get_action_head(ah_cfg, self.vla.llm_dim)
 
-        # Proprio projector (CL-LoRA: load from training checkpoint, not base model)
+        # Proprio projector (for CL-LoRA: init directly, no checkpoint file exists)
         self.proprio_projector = None
         if cfg.use_proprio:
-            pp_cfg = InferenceConfig(
-                pretrained_checkpoint=cfg.pretrained_checkpoint,
-                use_l1_regression=cfg.use_l1_regression,
-                use_film=False, num_images_in_input=cfg.num_images_in_input,
-                unnorm_key=cfg.unnorm_key,
-            )
-            self.proprio_projector = get_proprio_projector(pp_cfg, self.vla.llm_dim, PROPRIO_DIM)
+            if is_cl:
+                from prismatic.models.projectors import ProprioProjector
+                self.proprio_projector = ProprioProjector(
+                    llm_dim=self.vla.llm_dim, proprio_dim=PROPRIO_DIM
+                ).to(dtype=torch.bfloat16).to("cuda")
+            else:
+                pp_cfg = InferenceConfig(
+                    pretrained_checkpoint=cfg.pretrained_checkpoint,
+                    use_l1_regression=cfg.use_l1_regression,
+                    use_film=False, num_images_in_input=cfg.num_images_in_input,
+                    unnorm_key=cfg.unnorm_key,
+                )
+                self.proprio_projector = get_proprio_projector(pp_cfg, self.vla.llm_dim, PROPRIO_DIM)
 
         # Task bank
         if is_cl and cfg.eval_task_id > 0:
