@@ -98,11 +98,12 @@ class Model:
                 self.vla.vision_backbone = FiLMedPrismaticVisionBackbone(
                     vision_backbone=self.vla.vision_backbone,
                     llm_dim=self.vla.llm_dim,
-                ).to(self.vla.vision_backbone.weight.device)
+                ).to(dtype=torch.bfloat16)
                 vb_pattern = os.path.join(cfg.pretrained_checkpoint, "vision_backbone--*_checkpoint.pt")
                 vb_files = sorted(glob.glob(vb_pattern))
                 if vb_files:
                     vb_sd = torch.load(vb_files[-1], map_location="cpu", weights_only=True)
+                    self.vla.vision_backbone.to("cuda")
                     self.vla.vision_backbone.load_state_dict(vb_sd, strict=False)
                     print("[CL-LoRA] loaded vision_backbone (FiLM)")
             self.vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
