@@ -61,12 +61,12 @@ class Model:
             self._inj_ah = inject_cl_lora_into_action_head
             self._lb = load_task_bank
 
-        # Load base VLA (from base model if CL-LoRA)
+        # Load base VLA (from base model if CL-LoRA, without FiLM first)
         base_cfg = InferenceConfig(
             pretrained_checkpoint="/root/autodl-tmp/models/openvla-7b" if is_cl else cfg.pretrained_checkpoint,
             use_l1_regression=cfg.use_l1_regression,
             use_diffusion=cfg.use_diffusion,
-            use_film=cfg.use_film,
+            use_film=False if is_cl else cfg.use_film,  # FiLM applied after CL-LoRA injection
             use_proprio=cfg.use_proprio,
             num_images_in_input=cfg.num_images_in_input,
             unnorm_key=cfg.unnorm_key,
@@ -91,6 +91,21 @@ class Model:
                 sd = torch.load(adp, map_location="cpu", weights_only=True)
                 self.vla.load_state_dict(sd, strict=False)
                 print("[CL-LoRA] loaded adapter")
+
+            # Apply FiLM after CL-LoRA injection and load vision_backbone from checkpoint
+            if cfg.use_film:
+                from prismatic.models.film_vit_wrapper import FiLMedPrismaticVisionBackbone
+                self.vla.vision_backbone = FiLMedPrismaticVisionBackbone(
+                    vision_backbone=self.vla.vision_backbone,
+                    llm_dim=self.vla.llm_dim,
+                ).to(self.vla.vision_backbone.weight.device)
+                vb_pattern = os.path.join(cfg.pretrained_checkpoint, "vision_backbone--*_checkpoint.pt")
+                vb_files = sorted(glob.glob(vb_pattern))
+                if vb_files:
+                    vb_sd = torch.load(vb_files[-1], map_location="cpu", weights_only=True)
+                    self.vla.vision_backbone.load_state_dict(vb_sd, strict=False)
+                    print("[CL-LoRA] loaded vision_backbone (FiLM)")
+            self.vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
 
         self.processor = get_processor(base_cfg)
 
