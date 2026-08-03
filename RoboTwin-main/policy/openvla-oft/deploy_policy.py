@@ -56,9 +56,8 @@ class Model:
         if is_cl:
             with open(cl_config_path, "r") as f:
                 cl_cfg = json.load(f)
-            from cl_lora import inject_cl_lora_into_model, load_task_bank, inject_cl_lora_into_action_head
+            from cl_lora import inject_cl_lora_into_model, load_task_bank
             self._inj = inject_cl_lora_into_model
-            self._inj_ah = inject_cl_lora_into_action_head
             self._lb = load_task_bank
 
         # Load base VLA (from base model if CL-LoRA, without FiLM first)
@@ -111,8 +110,8 @@ class Model:
             # Load dataset statistics (needed for action unnormalization during inference)
             ds_file = os.path.join(cfg.pretrained_checkpoint, "dataset_statistics.json")
             if os.path.exists(ds_file):
-                from prismatic.training.train_utils import load_dataset_statistics
-                self.vla.norm_stats = load_dataset_statistics(ds_file)
+                with open(ds_file, "r") as f:
+                    self.vla.norm_stats = json.load(f)
                 print("[CL-LoRA] loaded dataset statistics")
 
         # Processor: use base model path (not checkpoint) for CL-LoRA
@@ -124,38 +123,16 @@ class Model:
         )
         self.processor = get_processor(proc_cfg)
 
-        # Action head
+        # Action head (get_action_head already handles CL-LoRA injection if first_lora_layer>0)
         self.action_head = None
         if cfg.use_l1_regression or cfg.use_diffusion:
-            if is_cl and fst > 0:
-                # Action head needs CL-LoRA injection
-                ah_cfg = InferenceConfig(
-                    pretrained_checkpoint=cfg.pretrained_checkpoint,
-                    use_l1_regression=cfg.use_l1_regression,
-                    use_film=cfg.use_film, num_images_in_input=cfg.num_images_in_input,
-                    unnorm_key=cfg.unnorm_key,
-                )
-                raw_ah = get_action_head(ah_cfg, self.vla.llm_dim)
-                self.action_head = self._inj_ah(
-                    raw_ah, rank=r, alpha=float(r),
-                    orthogonal_init=cl_cfg.get("orthogonal_init", True),
-                    freeze_a=cl_cfg.get("freeze_a", True),
-                    use_block_scale=cl_cfg.get("use_block_scale", True),
-                )
-                # Reload weights
-                pattern = os.path.join(cfg.pretrained_checkpoint, "action_head--*_checkpoint.pt")
-                files = sorted(glob.glob(pattern))
-                if files:
-                    state = torch.load(files[-1], map_location="cpu", weights_only=True)
-                    self.action_head.load_state_dict(state, strict=False)
-            else:
-                ah_cfg = InferenceConfig(
-                    pretrained_checkpoint=cfg.pretrained_checkpoint,
-                    use_l1_regression=cfg.use_l1_regression,
-                    use_film=cfg.use_film, num_images_in_input=cfg.num_images_in_input,
-                    unnorm_key=cfg.unnorm_key,
-                )
-                self.action_head = get_action_head(ah_cfg, self.vla.llm_dim)
+            ah_cfg = InferenceConfig(
+                pretrained_checkpoint=cfg.pretrained_checkpoint,
+                use_l1_regression=cfg.use_l1_regression,
+                use_film=cfg.use_film, num_images_in_input=cfg.num_images_in_input,
+                unnorm_key=cfg.unnorm_key,
+            )
+            self.action_head = get_action_head(ah_cfg, self.vla.llm_dim)
 
         # Proprio projector (for CL-LoRA: init directly, no checkpoint file exists)
         self.proprio_projector = None
