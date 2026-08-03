@@ -108,7 +108,14 @@ class Model:
                     print("[CL-LoRA] loaded vision_backbone (FiLM)")
             self.vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
 
-        self.processor = get_processor(base_cfg)
+        # Processor: use base model path (not checkpoint) for CL-LoRA
+        proc_cfg = InferenceConfig(
+            pretrained_checkpoint="/root/autodl-tmp/models/openvla-7b" if is_cl else cfg.pretrained_checkpoint,
+            use_l1_regression=cfg.use_l1_regression,
+            use_film=False, num_images_in_input=cfg.num_images_in_input,
+            unnorm_key=cfg.unnorm_key,
+        )
+        self.processor = get_processor(proc_cfg)
 
         # Action head
         self.action_head = None
@@ -143,10 +150,16 @@ class Model:
                 )
                 self.action_head = get_action_head(ah_cfg, self.vla.llm_dim)
 
-        # Proprio projector
+        # Proprio projector (CL-LoRA: load from training checkpoint, not base model)
         self.proprio_projector = None
         if cfg.use_proprio:
-            self.proprio_projector = get_proprio_projector(base_cfg, self.vla.llm_dim, PROPRIO_DIM)
+            pp_cfg = InferenceConfig(
+                pretrained_checkpoint=cfg.pretrained_checkpoint,
+                use_l1_regression=cfg.use_l1_regression,
+                use_film=False, num_images_in_input=cfg.num_images_in_input,
+                unnorm_key=cfg.unnorm_key,
+            )
+            self.proprio_projector = get_proprio_projector(pp_cfg, self.vla.llm_dim, PROPRIO_DIM)
 
         # Task bank
         if is_cl and cfg.eval_task_id > 0:
