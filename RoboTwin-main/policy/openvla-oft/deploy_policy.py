@@ -108,6 +108,13 @@ class Model:
                     print("[CL-LoRA] loaded vision_backbone (FiLM)")
             self.vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
 
+            # Load dataset statistics (needed for action unnormalization during inference)
+            ds_file = os.path.join(cfg.pretrained_checkpoint, "dataset_statistics.json")
+            if os.path.exists(ds_file):
+                from prismatic.training.train_utils import load_dataset_statistics
+                self.vla.norm_stats = load_dataset_statistics(ds_file)
+                print("[CL-LoRA] loaded dataset statistics")
+
         # Processor: use base model path (not checkpoint) for CL-LoRA
         proc_cfg = InferenceConfig(
             pretrained_checkpoint="/root/autodl-tmp/models/openvla-7b" if is_cl else cfg.pretrained_checkpoint,
