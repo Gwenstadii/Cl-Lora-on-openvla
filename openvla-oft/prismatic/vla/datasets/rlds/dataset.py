@@ -597,6 +597,10 @@ def make_interleaved_dataset(
     # Note =>> Seems to reduce memory usage without affecting speed?
     dataset = dataset.with_ram_budget(1)
 
+    # Prefetch so data preparation overlaps with GPU compute (without it, every
+    # training step serializes: GPU waits for the next sample to be produced)
+    dataset = dataset.prefetch(tf.data.AUTOTUNE)
+
     # Save for Later
     dataset.sample_weights = sample_weights
 
