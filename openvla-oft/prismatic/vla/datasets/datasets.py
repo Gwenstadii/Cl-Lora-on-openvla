@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple, Type
 
 import numpy as np
+import random
 import torch
 from PIL import Image
 from torch.utils.data import Dataset, IterableDataset
@@ -37,7 +38,20 @@ class RLDSBatchTransform:
         """Converts a RLDS batch to the format expected by the OpenVLA collator/models."""
         dataset_name, current_action = rlds_batch["dataset_name"], rlds_batch["action"][0]
         img = Image.fromarray(rlds_batch["observation"]["image_primary"][0])
-        lang = rlds_batch["task"]["language_instruction"].decode().lower()
+        # lang = rlds_batch["task"]["language_instruction"].decode().lower()
+        instr = rlds_batch["task"]["language_instruction"]
+
+        # 如果是 np.ndarray 或 list/tuple，随机选一个
+        if isinstance(instr, (np.ndarray, list, tuple)):
+            instr = random.choice(instr)
+
+        # 如果是 bytes 类型，则 decode 成字符串
+        if isinstance(instr, bytes):
+            instr = instr.decode("utf-8")
+
+        # 最后转换为小写（保证是 str）
+        assert isinstance(instr, str), f"Unexpected type for language_instruction: {type(instr)}"
+        lang = instr.lower()
         actions = rlds_batch["action"]
 
         # Construct Chat-based Prompt =>> Input is default query + language instruction, output are the action tokens
