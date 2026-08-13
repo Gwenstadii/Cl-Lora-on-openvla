@@ -26,7 +26,8 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --policy_name ${policy_name} \
     --unnorm_key ${unnorm_key} \
     --eval_task_id ${eval_task_id} \
-    --eval_video_log False
+    --eval_video_log False \
+    --clear_cache_freq 50
 
 # example usage
 # bash eval.sh move_can_pot demo_randomized ckpt_path 0 5 aloha_move_can_pot_builder
