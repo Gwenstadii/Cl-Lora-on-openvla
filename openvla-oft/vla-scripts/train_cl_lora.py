@@ -12,6 +12,7 @@ Reference: PI0.5 train_cl_lora.py (pi0.5代码/train_cl_lora.py)
 """
 
 import copy
+import json
 import os
 import time
 from collections import deque
@@ -68,6 +69,23 @@ from prismatic.vla.constants import (
     NUM_ACTIONS_CHUNK,
     PROPRIO_DIM,
 )
+
+def _merge_previous_stats(cfg, current_stats: dict) -> dict:
+    """Merge previous checkpoint's dataset_statistics into the current one.
+
+    In continual learning, a later-stage checkpoint must retain the statistics of all
+    earlier tasks: evaluation of any task looks up `norm_stats[unnorm_key]` from the
+    same checkpoint, and old tasks' stats are only present in older checkpoints.
+    """
+    merged = dict(current_stats)
+    if cfg.previous_checkpoint_dir is not None:
+        prev_file = os.path.join(cfg.previous_checkpoint_dir, "dataset_statistics.json")
+        if os.path.exists(prev_file):
+            with open(prev_file, "r") as f:
+                prev_stats = json.load(f)
+            for k, v in prev_stats.items():
+                merged.setdefault(k, v)
+    return merged
 from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 
@@ -771,7 +789,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     )
 
     if distributed_state.is_main_process:
-        save_dataset_statistics(train_dataset.dataset_statistics, run_dir)
+        save_dataset_statistics(_merge_previous_stats(cfg, train_dataset.dataset_statistics), run_dir)
 
     collator = PaddedCollatorForActionPrediction(
         processor.tokenizer.model_max_length, processor.tokenizer.pad_token_id, padding_side="right"
@@ -957,8 +975,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                     # Save teacher snapshot (for next stage)
                     save_teacher_snapshot(vla.module, action_head.module if action_head is not None else None, checkpoint_dir, log_step)
 
-                    # Save dataset statistics
-                    save_dataset_statistics(train_dataset.dataset_statistics, checkpoint_dir)
+                    # Save dataset statistics (merged with previous tasks' stats)
+                    save_dataset_statistics(_merge_previous_stats(cfg, train_dataset.dataset_statistics), checkpoint_dir)
 
                     # Save task bank for this stage (useful for resumed training)
                     if cfg.use_cl_lora:
@@ -1003,7 +1021,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         if cfg.use_film:
             torch.save(vla.module.vision_backbone.state_dict(), final_dir / f"vision_backbone--{cfg.max_steps}_checkpoint.pt")
         save_teacher_snapshot(vla.module, action_head.module if action_head is not None else None, final_dir, cfg.max_steps)
-        save_dataset_statistics(train_dataset.dataset_statistics, final_dir)
+        save_dataset_statistics(_merge_previous_stats(cfg, train_dataset.dataset_statistics), final_dir)
         print(f"Final checkpoint saved → {final_dir}")
 
     # PI Task Bank: freeze after Stage 1, save bank each stage, copy old banks forward
