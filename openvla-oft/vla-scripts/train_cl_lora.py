@@ -946,7 +946,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                     cl_config = {
                         "lora_rank": cfg.lora_rank,
                         "alpha": cfg.lora_rank,
-                        "shared_split_ratio": max(1, cfg.shared_depth) / 32,
+                        "shared_split_ratio": max(1, cfg.shared_depth) / max(1, 32 - cfg.first_lora_layer),
                         "shared_depth": cfg.shared_depth,
                         "orthogonal_init": cfg.orthogonal_init,
                         "freeze_a": cfg.freeze_a,
@@ -1002,7 +1002,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         cl_config = {
             "lora_rank": cfg.lora_rank,
             "alpha": cfg.lora_rank,
-            "shared_split_ratio": max(1, cfg.shared_depth) / 32,
+            "shared_split_ratio": max(1, cfg.shared_depth) / max(1, 32 - cfg.first_lora_layer),
             "shared_depth": cfg.shared_depth,
             "orthogonal_init": cfg.orthogonal_init,
             "freeze_a": cfg.freeze_a,
