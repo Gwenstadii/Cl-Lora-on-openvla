@@ -15,7 +15,14 @@ from experiments.robot.openvla_utils import (
     get_vla_action,
 )
 
-sys.path.insert(0, "/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/vla-scripts")
+# vla-scripts 目录（含 cl_lora.py）相对本文件定位，兼容不同服务器；找不到时回退旧路径
+_vla_scripts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "openvla-oft", "vla-scripts"))
+if not os.path.isdir(_vla_scripts_dir):
+    _vla_scripts_dir = "/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/vla-scripts"
+sys.path.insert(0, _vla_scripts_dir)
+
+# 基座模型路径可用环境变量覆盖（新服务器 export OPENVLA_BASE_PATH=/path/to/openvla-7b）
+BASE_MODEL_PATH = os.environ.get("OPENVLA_BASE_PATH", "/root/autodl-tmp/models/openvla-7b")
 
 
 @dataclass
@@ -62,7 +69,7 @@ class Model:
 
         # Load base VLA (from base model if CL-LoRA, without FiLM first)
         base_cfg = InferenceConfig(
-            pretrained_checkpoint="/root/autodl-tmp/models/openvla-7b" if is_cl else cfg.pretrained_checkpoint,
+            pretrained_checkpoint=BASE_MODEL_PATH if is_cl else cfg.pretrained_checkpoint,
             use_l1_regression=cfg.use_l1_regression,
             use_diffusion=cfg.use_diffusion,
             use_film=False if is_cl else cfg.use_film,  # FiLM applied after CL-LoRA injection
@@ -116,7 +123,7 @@ class Model:
 
         # Processor: use base model path (not checkpoint) for CL-LoRA
         proc_cfg = InferenceConfig(
-            pretrained_checkpoint="/root/autodl-tmp/models/openvla-7b" if is_cl else cfg.pretrained_checkpoint,
+            pretrained_checkpoint=BASE_MODEL_PATH if is_cl else cfg.pretrained_checkpoint,
             use_l1_regression=cfg.use_l1_regression,
             use_film=False, num_images_in_input=cfg.num_images_in_input,
             unnorm_key=cfg.unnorm_key,

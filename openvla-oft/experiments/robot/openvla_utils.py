@@ -259,8 +259,11 @@ def get_vla(cfg: Any) -> torch.nn.Module:
     import os
     import sys
     import torch
-    # 确保能找到我们的 cl_lora 注入函数
-    sys.path.append("/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/vla-scripts")
+    # 确保能找到我们的 cl_lora 注入函数（相对本文件定位，找不到时回退旧路径）
+    _vla_scripts_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "vla-scripts"))
+    if not os.path.isdir(_vla_scripts_dir):
+        _vla_scripts_dir = "/root/autodl-tmp/openvla-oft/Cl-Lora-on-openvla/openvla-oft/vla-scripts"
+    sys.path.append(_vla_scripts_dir)
     try:
         from cl_lora import inject_cl_lora_into_model
     except ImportError:
@@ -272,7 +275,7 @@ def get_vla(cfg: Any) -> torch.nn.Module:
 
     # 🚨 核心逻辑：如果是 CL-LoRA，Base 骨架必须从原始模型路径加载
     # 这里的路径对应你训练命令中的 --vla_path
-    base_model_path = "/root/autodl-tmp/models/openvla-7b" if is_cl_lora else cfg.pretrained_checkpoint
+    base_model_path = os.environ.get("OPENVLA_BASE_PATH", "/root/autodl-tmp/models/openvla-7b") if is_cl_lora else cfg.pretrained_checkpoint
 
     if not model_is_on_hf_hub(base_model_path):
         AutoConfig.register("openvla", OpenVLAConfig)
