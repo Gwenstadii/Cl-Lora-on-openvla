@@ -157,6 +157,23 @@ cd /mnt/data/pengshengdi/RoboTwin-main && bash policy/openvla-oft/eval.sh \
 - 每个任务有固定 prompt（在 `deploy_policy.py` 的 `_FIXED_PROMPTS`）。
 - **评估旧任务前必须**：`export OPENVLA_BASE_PATH=...`；且确认 checkpoint 的 `dataset_statistics.json` 包含该任务的 key（后续用修复后的脚本训练会自动累积；老 checkpoint 需手动合并）。
 
+## 8.1 多卡并行评估（评估慢的解法：按卡分配）
+
+评估慢的瓶颈在 CPU（SAPIEN RT 光追渲染 + expert 预演 + 图像预处理），不在 GPU 算力（handover 9.2 已确认）。单卡跑 50 个 episode 约 2 小时+（每个 episode 最多 600 步仿真 + 每 25 步一次 7B 推理）。
+
+**`eval_multi_gpu.sh`（已推送）**：一个 worker 一张卡（或 `4,4,5,5` 每卡两个），seed 自动错开（worker i 从 base_seed+i 起、步长=worker 数），与单卡覆盖完全相同的 seed 集合，成功率可直接对比；结束后自动合并出 `_merged_result.json/.txt`。
+
+```bash
+# 2 卡各 25 个 episode（总 50），tag 固定方便找结果
+bash policy/openvla-oft/eval_multi_gpu.sh handover_mic demo_clean $CKPT 0 4,5 aloha_handover_mic_clean 1 50 v39_taskA_g2
+# 实时看进度（启动时会打印每个 worker 的日志路径）：
+tail -f eval_result/handover_mic/openvla-oft/demo_clean/<ckpt路径>/v39_taskA_g2/worker_00/eval.log
+```
+
+- worker 日志里 `step: X / 600` 是**单 episode 内步数**（step_lim=600，不是 episode 数）；每 episode 结束打印一次 `Success rate: suc/test_num`。
+- 想要更快：CPU 核够的话用 `4,4,5,5`（4 worker，每卡 2 个，每卡显存 ~40GB 内）；不要动 `step_lim`/渲染分辨率，会改变成功率口径。
+- 后续如果装了 flash-attn 并 A/B 验证通过，单 episode 耗时还能再降（eager attention 是推理大头之一，见 9.2）。
+
 ## 9. 关键分析结论（下一阶段最相关）
 
 ### 9.1 为什么 Stage 2 后旧任务掉点（核心待办）
