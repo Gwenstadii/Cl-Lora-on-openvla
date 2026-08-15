@@ -23,12 +23,33 @@ CONDA_ENV="$REPO_ROOT/openvla"
 echo "================ RoboTwin CL-LoRA 环境准备 ================"
 
 # ---------- 1) conda 环境 ----------
-if command -v conda >/dev/null 2>&1; then
-    conda activate "$CONDA_ENV" 2>/dev/null \
-        && echo "[OK] conda env: $CONDA_ENV" \
-        || echo "[WARN] conda activate 失败, 请手动执行: conda activate $CONDA_ENV"
+# 先找 conda.sh 初始化 conda 函数（非交互 shell 下 conda activate 不可用是常见坑）
+CONDA_SH=""
+for cand in \
+    "$REPO_ROOT/miniconda3/etc/profile.d/conda.sh" \
+    "$REPO_ROOT/anaconda3/etc/profile.d/conda.sh" \
+    "$HOME/miniconda3/etc/profile.d/conda.sh" \
+    "$HOME/anaconda3/etc/profile.d/conda.sh" \
+    "$HOME/miniforge3/etc/profile.d/conda.sh"; do
+    if [ -f "$cand" ]; then CONDA_SH="$cand"; break; fi
+done
+
+if [ -n "$CONDA_SH" ]; then
+    # shellcheck disable=SC1090
+    source "$CONDA_SH"
+    if conda activate "$CONDA_ENV" 2>/dev/null; then
+        echo "[OK] conda env: $CONDA_ENV"
+    else
+        echo "[WARN] conda activate 失败, 尝试用 PATH 兜底"
+    fi
 else
-    echo "[WARN] 未找到 conda 命令, 请手动执行: conda activate $CONDA_ENV"
+    echo "[WARN] 未找到 conda.sh, 尝试用 PATH 兜底"
+fi
+
+# 兜底: 无论 activate 是否成功, 确保 python 指向 openvla 环境
+if ! python -c "import sys; sys.exit(0 if sys.prefix == '$CONDA_ENV' else 1)" 2>/dev/null; then
+    export PATH="$CONDA_ENV/bin:$PATH"
+    echo "[INFO] PATH 已前置 $CONDA_ENV/bin (python=$CONDA_ENV/bin/python)"
 fi
 
 # ---------- 2) 基座模型自动探测 ----------
@@ -84,6 +105,11 @@ git -C "$REPO_ROOT" log --oneline -1
 echo ""
 echo "---- torch / CUDA ----"
 python -c "import torch; print('torch', torch.__version__, '| cuda', torch.version.cuda, '| gpu_avail', torch.cuda.is_available())"
+
+echo ""
+echo "---- prismatic (评估/训练核心依赖) ----"
+python -c "import prismatic; print('prismatic OK:', prismatic.__file__)" \
+    || echo "[FAIL] import prismatic 失败 —— 当前 python 不是 openvla 环境! 请检查上面 conda/PATH 输出"
 
 echo ""
 echo "---- GPU 状态 (关注 4/5 号卡是否空闲) ----"

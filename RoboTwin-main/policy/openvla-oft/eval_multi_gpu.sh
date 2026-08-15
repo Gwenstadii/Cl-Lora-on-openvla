@@ -60,6 +60,13 @@ per_worker=$(( (episodes + num_workers - 1) / num_workers ))  # 向上取整, �
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/../.."  # 到 RoboTwin-main 根目录
 
+# 快速环境自检: prismatic 必须在当前 python 环境里 (openvla conda env)
+if ! python -c "import prismatic" 2>/dev/null; then
+    echo "[FAIL] 当前 python 环境里找不到 prismatic —— 请先: cd /mnt/data/pengshengdi && source server_env.sh"
+    echo "       (确认输出里有 [OK] conda env 和 prismatic OK 两行)"
+    exit 1
+fi
+
 unset CUDA_VISIBLE_DEVICES  # 每个 worker 各自指定, 不继承外层
 
 echo "======================================================================"
