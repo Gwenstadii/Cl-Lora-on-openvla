@@ -22,14 +22,17 @@
 # 说明:
 #   - 各 worker 的 seed 自动错开 (worker i 从 base_seed+i 开始, 步长=worker 数),
 #     与单卡评估覆盖完全相同的 seed 集合, 成功率可直接对比。
-#   - 每个 worker 独立进程、独立模型副本, 日志写在
+#   - 每个 worker 独立进程、独立模型副本, 完整日志写在
 #       eval_result/<task>/<policy>/<config>/<ckpt>/<tag>/worker_XX/eval.log
-#     实时进度: tail -f 该日志。
+#   - 主终端【实时】显示每个 worker 的关键进度行 (带 [wX|GPU Y] 前缀):
+#       Success! / Fail!             -> 单个 episode 结束(成功/失败)
+#       Success rate: X/25 => Z%     -> 该 worker 已完成的 episode 数 X / 配额
+#     （episode 内 step 进度不进主终端, 想看细节 tail -f 日志即可）
 #   - 全部结束后自动合并各 worker 结果, 生成 _merged_result.json / .txt。
 #   - 评估前记得 export OPENVLA_BASE_PATH=... (deploy_policy.py 需要)。
 # =============================================================================
 
-set -u
+set -u -o pipefail
 
 if [ $# -lt 6 ]; then
     echo "用法: bash eval_multi_gpu.sh <task_name> <task_config> <checkpoint_path> <seed> <gpus> <unnorm_key> [eval_task_id] [episodes] [tag]"
@@ -84,7 +87,7 @@ for i in $(seq 0 $((num_workers - 1))); do
     worker_dir="eval_result/${task_name}/${policy_name}/${task_config}/${checkpoint_path}/${result_tag}/worker_$(printf %02d "$i")"
     mkdir -p "$worker_dir"
     log_file="$worker_dir/eval.log"
-    echo ">> worker $i on GPU $gpu, log: $log_file"
+    echo ">> worker $i on GPU $gpu, log: $log_file (关键进度实时显示在下方)"
     CUDA_VISIBLE_DEVICES=$gpu PYTHONUNBUFFERED=1 PYTHONWARNINGS=ignore::UserWarning \
     python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
         --overrides \
@@ -102,7 +105,9 @@ for i in $(seq 0 $((num_workers - 1))); do
         --eval_worker_id ${i} \
         --eval_episodes ${per_worker} \
         --eval_result_tag ${result_tag} \
-        > "$log_file" 2>&1 &
+        2>&1 | tee "$log_file" \
+        | grep --line-buffered -E "Success!|Fail!|Success rate|Error|Traceback" \
+        | sed "s/^/  [w${i}|GPU ${gpu}] /" &
     pids+=($!)
 done
 
