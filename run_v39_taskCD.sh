@@ -19,6 +19,9 @@ TRAIN_DIR="/mnt/data/pengshengdi/openvla-oft"
 DATA_DIR="/mnt/data/pengshengdi/RoboTwin-main/data"
 CKPT_B="$LOGS_ROOT/rt_v39_taskB--40000_chkpt"     # Stage 2 最终 checkpoint (Stage 3 的起点)
 
+# 使用的 GPU（物理卡号, 逗号分隔; 可通过环境变量覆盖, 默认 6,7）
+GPUS="${GPUS:-6,7}"
+
 # ---------- 前置检查 ----------
 check_env() {
     [ -n "${VLA_PATH:-}" ]  || { echo "[FAIL] VLA_PATH 未设置 —— 请先: source server_env.sh"; exit 1; }
@@ -54,7 +57,7 @@ run_stage() {  # $1=stage  $2=dataset  $3=run_id  $4=prev_checkpoint_dir  $5=pre
     local stage=$1 ds=$2 rid=$3 prev_dir=$4 prev_step=$5
     echo ""
     echo "############ Stage $stage : $ds (from $prev_dir) ############"
-    env CUDA_VISIBLE_DEVICES=4,5 PYTORCH_ALLOC_CONF=expandable_segments:True WANDB_MODE=offline \
+    env CUDA_VISIBLE_DEVICES=$GPUS PYTORCH_ALLOC_CONF=expandable_segments:True WANDB_MODE=offline \
     torchrun --standalone --nproc_per_node 2 vla-scripts/train_cl_lora.py \
         --run_root_dir "$LOGS_ROOT" --run_id_override "$rid" \
         --max_steps 40000 --save_freq 10000 \
