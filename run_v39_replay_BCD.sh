@@ -105,10 +105,11 @@ COMMON_ARGS=(--batch_size 1 --grad_accumulation_steps 4 --learning_rate 5e-4
 run_replay_stage() {  # $1=stage  $2=dataset  $3=run_id  $4=prev_dir  $5=prev_step  $6=teacher_dir  $7=teacher_step  $8..=buffer_dirs
     local stage=$1 ds=$2 rid=$3 prev_dir=$4 prev_step=$5 tdir=$6 tstep=$7
     shift 7
-    local buffers="$*"
+    local buffers_csv
+    buffers_csv=$(IFS=,; echo "$*")   # 多个 buffer 目录逗号拼接 (draccus List[str] 不可靠, 用 str)
     echo ""
     echo "############ Stage $stage : $ds ############"
-    echo "    replay buffers: $buffers"
+    echo "    replay buffers: $buffers_csv"
     echo "    teacher: $tdir/teacher_snapshot--$tstep.pt"
     env CUDA_VISIBLE_DEVICES=$GPUS PYTORCH_ALLOC_CONF=expandable_segments:True WANDB_MODE=offline \
     torchrun --standalone --nproc_per_node 2 vla-scripts/train_cl_lora.py \
@@ -120,7 +121,7 @@ run_replay_stage() {  # $1=stage  $2=dataset  $3=run_id  $4=prev_dir  $5=prev_st
         --previous_checkpoint_dir "$prev_dir" \
         --previous_checkpoint_step "$prev_step" \
         --teacher_checkpoint_dir "$tdir" --teacher_checkpoint_step "$tstep" \
-        --replay_buffer_dirs $buffers \
+        --replay_buffer_dirs "$buffers_csv" \
         "${COMMON_ARGS[@]}"
     local rc=$?
     if [ $rc -ne 0 ]; then

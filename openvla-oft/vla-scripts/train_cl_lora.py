@@ -147,7 +147,8 @@ class TrainCLConfig:
 
     # ---- Replay ----
     use_replay: bool = False
-    replay_buffer_dirs: List[str] = field(default_factory=list)
+    # 逗号分隔的 buffer 目录列表 (draccus 对 List[str] 的 CLI 解析不可靠, 用 str 绕开)
+    replay_buffer_dirs: str = ""
     replay_loss_weight: float = 1.0
     replay_every_n_steps: int = 1
     replay_sample_strategy: str = "round_robin"
@@ -476,14 +477,15 @@ def _build_replay_loaders(
     """Build DataLoaders for each replay buffer directory."""
     if not cfg.use_replay:
         return None, None
-    if not cfg.replay_buffer_dirs:
+    if not cfg.replay_buffer_dirs.strip():
         raise ValueError("--use_replay True but --replay_buffer_dirs is empty. "
-                         "Provide at least one replay buffer directory.")
+                         "Provide at least one replay buffer directory (逗号分隔).")
+    buffer_dirs = [d for d in cfg.replay_buffer_dirs.split(",") if d.strip()]
     loaders = []
     iters = []
     replay_bs = cfg.replay_batch_size if cfg.replay_batch_size is not None else cfg.batch_size
 
-    for buf_dir in cfg.replay_buffer_dirs:
+    for buf_dir in buffer_dirs:
         dataset = PrototypeReplayDataset(buf_dir, batch_transform)
         if len(dataset) == 0:
             raise RuntimeError(f"Replay buffer at {buf_dir} contains 0 samples. "
