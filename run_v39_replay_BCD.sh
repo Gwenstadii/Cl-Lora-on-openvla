@@ -62,19 +62,20 @@ echo "============ 开始: 建 buffer -> Stage 2 -> 3 -> 4 (原型回放版) ===
 cd "$TRAIN_DIR" || { echo "[FAIL] 目录不存在: $TRAIN_DIR"; exit 1; }
 
 # ---------- 1) 构建原型回放 buffer ----------
-# $1=task_short(A/B/C)  $2=dataset_name  $3=输出目录
+# $1=task_short(A/B/C)  $2=dataset_name  $3=输出目录  $4=stats 来源 checkpoint (归一化必须与训练同源)
 build_buffer() {
-    local tag=$1 ds=$2 out=$3
+    local tag=$1 ds=$2 out=$3 stats_ckpt=$4
     if [ -f "$out/manifest.jsonl" ] && [ -s "$out/manifest.jsonl" ] && [ "${FORCE_REBUILD:-0}" != "1" ]; then
         echo "[SKIP] buffer 已存在: $out ($(wc -l < "$out/manifest.jsonl") samples)"
         return 0
     fi
-    echo "############ 构建 $tag buffer: $ds ############"
+    echo "############ 构建 $tag buffer: $ds (stats from $stats_ckpt) ############"
     CUDA_VISIBLE_DEVICES=$BUILD_GPU python vla-scripts/build_replay_buffer_robotwin.py \
         --vla-path "$VLA_PATH" \
         --data-root-dir datasets/rlds \
         --dataset-name "$ds" \
         --output-dir "$out" \
+        --stats-path "$stats_ckpt/dataset_statistics.json" \
         --num-episodes "$NUM_EPISODES" \
         --top-k "$TOP_K" \
         --overwrite
@@ -87,9 +88,10 @@ build_buffer() {
 }
 
 mkdir -p "$BUFFER_ROOT"
-build_buffer A aloha_handover_mic_clean "$BUFFER_ROOT/taskA"
-build_buffer B aloha_grab_roller_clean "$BUFFER_ROOT/taskB"
-build_buffer C aloha_stack_bowls_two_clean "$BUFFER_ROOT/taskC"
+# 每个任务的 buffer 用「包含该任务 stats 的 checkpoint」归一化
+build_buffer A aloha_handover_mic_clean   "$BUFFER_ROOT/taskA" "$CKPT_A"
+build_buffer B aloha_grab_roller_clean    "$BUFFER_ROOT/taskB" "$LOGS_ROOT/rt_v39_taskB--40000_chkpt"
+build_buffer C aloha_stack_bowls_two_clean "$BUFFER_ROOT/taskC" "$LOGS_ROOT/rt_v39_taskC--40000_chkpt"
 
 # ---------- 2-4) 回放训练 ----------
 COMMON_ARGS=(--batch_size 1 --grad_accumulation_steps 4 --learning_rate 5e-4

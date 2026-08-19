@@ -23,19 +23,16 @@ import math
 import os
 import pathlib
 import shutil
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import tensorflow as tf
+import tensorflow_datasets as tfds
 import torch
 import tqdm
 from PIL import Image
 
 from prismatic.vla.constants import NUM_ACTIONS_CHUNK
-from prismatic.vla.datasets.rlds import make_single_dataset
-from prismatic.vla.datasets.rlds.oxe import get_oxe_dataset_kwargs_and_weights
-from prismatic.vla.constants import ACTION_PROPRIO_NORMALIZATION_TYPE
-
-tf = None  # make_single_dataset 内部使用 tf; 这里不直接依赖
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +44,7 @@ class ReplayBufferConfig:
     data_root_dir: str = "datasets/rlds"
     dataset_name: str = "aloha_handover_mic_clean"
     output_dir: str = "/mnt/data/pengshengdi/LOGS-RT/replay_buffers/taskA"
+    stats_path: str = ""                 # checkpoint 的 dataset_statistics.json (归一化 action/proprio 用)
     num_episodes: int = 10
     top_k: int = 3
 
@@ -330,18 +328,77 @@ def _select_coverage_representatives(features: np.ndarray, cfg: ReplayBufferConf
 
 
 # ---------------------------------------------------------------------------
-# 语言指令
+# 语言指令 / 归一化 (与训练侧 BOUNDS 公式一致)
 # ---------------------------------------------------------------------------
 
 def _get_language_instruction(step: Any) -> str:
-    instr = step["task"]["language_instruction"]
-    if hasattr(instr, "numpy"):
-        instr = instr.numpy()
-    if isinstance(instr, np.ndarray):
-        instr = instr.item() if instr.size == 1 else instr[0]
-    if isinstance(instr, bytes):
-        instr = instr.decode("utf-8")
-    return str(instr)
+    """从 step 探测语言指令 (兼容多种字段形态)."""
+    candidates = []
+    if isinstance(step, dict):
+        if "language_instruction" in step:
+            candidates.append(step["language_instruction"])
+        if "task" in step and isinstance(step["task"], dict):
+            candidates.append(step["task"].get("language_instruction"))
+        obs = step.get("observation", {})
+        if isinstance(obs, dict) and "natural_language_instruction" in obs:
+            candidates.append(obs["natural_language_instruction"])
+    for raw in candidates:
+        if raw is None:
+            continue
+        if hasattr(raw, "numpy"):
+            raw = raw.numpy()
+        if isinstance(raw, np.ndarray):
+            raw = raw.item() if raw.size == 1 else raw[0]
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        if raw:
+            return str(raw)
+    raise KeyError(f"Cannot find language instruction. Step keys: {list(step.keys()) if isinstance(step, dict) else type(step)}")
+
+
+def _normalize_bounds(values: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
+    """与 prismatic normalize_action_and_proprio (BOUNDS) 完全一致的归一化."""
+    values = np.asarray(values, dtype=np.float64)
+    low = np.asarray(low, dtype=np.float64)
+    high = np.asarray(high, dtype=np.float64)
+    out = 2.0 * (values - low) / (high - low + 1e-8) - 1.0
+    out = np.clip(out, -1.0, 1.0)
+    zeros_mask = low == high
+    out[..., zeros_mask] = 0.0
+    return out.astype(np.float32)
+
+
+def _load_normalization_stats(stats_path: str, dataset_name: str) -> Tuple[Optional[Dict], Optional[Dict]]:
+    """从 checkpoint 的 dataset_statistics.json 取 action/proprio 的 min/max."""
+    if not stats_path or not os.path.isfile(stats_path):
+        print(f"[WARN] stats_path 未提供或不存在: {stats_path!r} —— action/proprio 不做归一化!")
+        return None, None
+    with open(stats_path, "r") as f:
+        stats = json.load(f)
+    if dataset_name not in stats:
+        print(f"[WARN] dataset_statistics.json 里没有 {dataset_name} 的统计! keys={sorted(stats.keys())}")
+        return None, None
+    ds_stats = stats[dataset_name]
+    action_stats = {k: np.asarray(v, dtype=np.float64) for k, v in ds_stats.get("action", {}).items()}
+    proprio_stats = {k: np.asarray(v, dtype=np.float64) for k, v in ds_stats.get("proprio", {}).items()}
+    if "min" not in action_stats or "max" not in action_stats:
+        print(f"[WARN] action stats 缺 min/max: keys={list(action_stats.keys())}")
+        return None, None
+    print(f"[OK] 归一化统计已加载: action min/max (dim={action_stats['min'].shape}), "
+          f"proprio min/max (dim={proprio_stats.get('min', np.array([])).shape})")
+    return action_stats, proprio_stats
+
+
+def _normalize_action(action: np.ndarray, action_stats: Optional[Dict]) -> np.ndarray:
+    if action_stats is None:
+        return action.astype(np.float32)
+    return _normalize_bounds(action, action_stats["min"], action_stats["max"])
+
+
+def _normalize_proprio(proprio: np.ndarray, proprio_stats: Optional[Dict]) -> np.ndarray:
+    if proprio_stats is None:
+        return proprio.astype(np.float32)
+    return _normalize_bounds(proprio, proprio_stats["min"], proprio_stats["max"])
 
 
 # ---------------------------------------------------------------------------
@@ -369,35 +426,14 @@ def build_buffer(cfg: ReplayBufferConfig) -> None:
     ).to(device)
     vla.eval()
 
-    # ---- [2/5] RoboTwin RLDS 轨迹 (与训练同管线: 3 相机 + proprio 归一化) ----
+    # ---- [2/5] RoboTwin RLDS 数据集 (tfds episode 级, 与 LIBERO 原版一致) ----
     print(f"[2/5] Loading RLDS dataset: {cfg.dataset_name}")
-    # 与 RLDSDataset.__init__ 相同的 aloha 配置
-    mixture_spec = [(cfg.dataset_name, 1.0)]
-    per_dataset_kwargs, _weights = get_oxe_dataset_kwargs_and_weights(
-        cfg.data_root_dir,
-        mixture_spec,
-        load_camera_views=("primary", "left_wrist", "right_wrist"),
-        load_depth=False,
-        load_proprio=True,
-        load_language=True,
-        action_proprio_normalization_type=ACTION_PROPRIO_NORMALIZATION_TYPE,
-    )
-    traj_transform_kwargs = dict(
-        window_size=1,
-        future_action_window_size=NUM_ACTIONS_CHUNK - 1,
-        skip_unlabeled=True,
-        goal_relabeling_strategy="uniform",
-    )
-    frame_transform_kwargs = dict(
-        resize_size=(224, 224),
-        num_parallel_calls=8,
-    )
-    ds = make_single_dataset(
-        per_dataset_kwargs[0],
-        train=False,
-        traj_transform_kwargs=traj_transform_kwargs,
-        frame_transform_kwargs=frame_transform_kwargs,
-    )
+    tf.config.set_visible_devices([], "GPU")
+    builder = tfds.builder(cfg.dataset_name, data_dir=cfg.data_root_dir)
+    ds = builder.as_dataset(split="all")
+
+    # 归一化统计 (来自 checkpoint 的 dataset_statistics.json, 与训练侧同分布)
+    action_stats, proprio_stats = _load_normalization_stats(cfg.stats_path, cfg.dataset_name)
 
     # ---- [3/5] 逐 episode 处理 ----
     print(f"[3/5] Processing up to {cfg.num_episodes} episodes ...")
@@ -411,23 +447,48 @@ def build_buffer(cfg: ReplayBufferConfig) -> None:
     with seg_manifest.open("w", encoding="utf-8") as seg_f, \
          samp_manifest.open("w", encoding="utf-8") as samp_f:
 
-        for ep_idx, batch in enumerate(ds.as_numpy_iterator()):
+        for ep_idx, episode in enumerate(ds):
             if ep_idx >= cfg.num_episodes:
                 break
 
-            obs = batch["observation"]
-            lang = _get_language_instruction(batch)
-            proprio = np.asarray(obs["proprio"], dtype=np.float32)          # [T, 14] 归一化
-            head_imgs = np.asarray(obs["image_primary"])                    # [T, H, W, 3]
-            T = head_imgs.shape[0]
+            steps = list(episode["steps"])
+            T = len(steps)
             if T < cfg.kinematic_window + cfg.min_segment_frames:
                 continue
+
+            # --- 字段探测 (打印一次帮助排错) ---
+            if ep_idx == 0:
+                obs_keys = list(steps[0]["observation"].keys()) if "observation" in steps[0] else []
+                step_keys = list(steps[0].keys())
+                print(f"  [INFO] step keys: {step_keys}")
+                print(f"  [INFO] observation keys: {obs_keys}")
+
+            lang = _get_language_instruction(steps[0])
             print(f"  episode {ep_idx}: T={T}, task={lang!r}")
 
-            # 动作 chunk: [T, chunk, 14] 或 [T, 14]
-            action_raw = np.asarray(batch["action"], dtype=np.float32)
-            if action_raw.ndim == 2:
-                action_raw = np.repeat(action_raw[:, None, :], NUM_ACTIONS_CHUNK, axis=1)
+            # state: observation["state"] [14]  (JOINT_BIMANUAL: 左7+右7)
+            states_raw = np.array([s["observation"]["state"].numpy() for s in steps], dtype=np.float32)
+            if states_raw.ndim != 2 or states_raw.shape[1] != 14:
+                raise RuntimeError(f"state 维度异常: {states_raw.shape} (期望 [T, 14])")
+            proprio = _normalize_proprio(states_raw, proprio_stats)          # [T, 14] 归一化
+
+            # 图像: head = image, 双腕 = left/right_wrist_image
+            obs0 = steps[0]["observation"]
+            if "image" not in obs0 or "left_wrist_image" not in obs0 or "right_wrist_image" not in obs0:
+                raise RuntimeError(f"observation 缺少相机字段, 实际 keys: {list(obs0.keys())}")
+            head_imgs = np.array([s["observation"]["image"].numpy() for s in steps], dtype=np.uint8)
+            left_imgs = np.array([s["observation"]["left_wrist_image"].numpy() for s in steps], dtype=np.uint8)
+            right_imgs = np.array([s["observation"]["right_wrist_image"].numpy() for s in steps], dtype=np.uint8)
+
+            # 动作: 归一化 + 真实未来 chunk [T, 25, 14]
+            actions_raw = np.array([s["action"].numpy() for s in steps], dtype=np.float32)
+            if actions_raw.ndim != 2 or actions_raw.shape[1] != 14:
+                raise RuntimeError(f"action 维度异常: {actions_raw.shape} (期望 [T, 14])")
+            actions_norm = _normalize_action(actions_raw, action_stats)      # [T, 14]
+            action_chunks = np.repeat(actions_norm[:, None, :], NUM_ACTIONS_CHUNK, axis=1)  # [T, 25, 14]
+            for t in range(T):
+                end = min(t + NUM_ACTIONS_CHUNK, T)
+                action_chunks[t, : end - t] = actions_norm[t:end]
 
             # --- Step A: 运动分割 (双臂关节) ---
             motions = _compute_motion_signals_bimanual(proprio, cfg)
@@ -467,16 +528,16 @@ def build_buffer(cfg: ReplayBufferConfig) -> None:
                 }
                 seg_f.write(json.dumps(seg_rec, ensure_ascii=False) + "\n")
 
-                # 保存回放样本 (3 相机 + 归一化 proprio/action + task)
+                # 保存回放样本 (3 相机 + 归一化 proprio/action chunk + task)
                 for rank, fidx in enumerate(chosen_frames):
                     sp = out_dir / "samples" / f"sample_{sample_count:08d}.npz"
                     np.savez_compressed(
                         sp,
                         image_primary=head_imgs[fidx],
-                        left_wrist_image=obs["left_wrist_image"][fidx],
-                        right_wrist_image=obs["right_wrist_image"][fidx],
+                        left_wrist_image=left_imgs[fidx],
+                        right_wrist_image=right_imgs[fidx],
                         proprio=proprio[fidx],
-                        action=action_raw[fidx],          # [chunk, 14] 归一化
+                        action=action_chunks[fidx],       # [25, 14] 归一化真实 chunk
                         task=lang,
                         dataset_name=cfg.dataset_name,
                     )
@@ -553,6 +614,8 @@ def main():
     parser.add_argument("--data-root-dir", default="datasets/rlds")
     parser.add_argument("--dataset-name", default="aloha_handover_mic_clean")
     parser.add_argument("--output-dir", default="/mnt/data/pengshengdi/LOGS-RT/replay_buffers/taskA")
+    parser.add_argument("--stats-path", default="",
+                        help="checkpoint 的 dataset_statistics.json 路径 (归一化 action/proprio, 必须与训练同源)")
     parser.add_argument("--num-episodes", type=int, default=10)
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--kinematic-window", type=int, default=5)
