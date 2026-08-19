@@ -687,6 +687,15 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             vla.vision_backbone.load_state_dict(_pending_vision_state)
         vla.vision_backbone = vla.vision_backbone.to(device_id)
 
+        # ===== 方案 A: Stage>1 冻结 FiLM（视觉特征不再随新任务漂移）=====
+        # FiLM (~450M) 不在 task bank 里, Stage 2+ 继续训练会让旧任务视觉特征错位,
+        # 恢复旧任务 bank 也救不回。冻结后所有任务共享 Stage 1 学到的视觉调制。
+        if cfg.stage > 1:
+            for p in vla.vision_backbone.parameters():
+                p.requires_grad = False
+            print("[FiLM] Stage>1: vision_backbone (含 FiLM) 已冻结, 视觉特征恒定")
+            count_parameters(vla.vision_backbone, "vla.vision_backbone (frozen)")
+
     # ---- DDP ----
     vla = wrap_ddp(vla, device_id, find_unused=True)
 
