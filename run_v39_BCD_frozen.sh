@@ -1,21 +1,25 @@
 #!/bin/bash
 # =============================================================================
-# run_v39_BCD_frozen.sh — V39 冻结 FiLM 版: Task B → C → D 连续重训 (Stage 2-4)
+# run_v39_BCD_frozen.sh — V39 冻结 FiLM 版 v2: Task B → C → D 连续重训 (Stage 2-4)
+#
+# v2 相对 v1 的改进: 修复共享层 block_scale 漏冻结 bug (cl_lora.py 4810e6f)
+#   - FiLM 冻结 (方案 A) + 共享层 LoRA-A/B/block_scale 全部冻结
+#   - 旧任务恢复时共享通路完全一致 → 各任务应恢复到"刚训完"的水平, C 不再归零
 #
 # 背景: 无回放基线 B/C/D 训练里 FiLM (~450M) 持续漂移导致旧任务灾难性遗忘
-#       (A 0.98→0.04→0, C 0.86→0.02)。本脚本用「Stage>1 冻结 FiLM」(方案 A)
-#       重跑 B/C/D, 验证旧任务保留率是否回升。train_cl_lora.py 已内置冻结逻辑。
+#       (A 0.98→0.04→0, C 0.86→0.02)。v1 (仅冻结 FiLM) 把 A/B 救回 0.7,
+#       但共享层 block_scale 漏冻结导致 C 用 D ckpt 评估归零。
 #
 # 用法（tmux 里前台跑, 实时看输出）:
 #   cd /mnt/data/pengshengdi && git pull && source server_env.sh
-#   tmux new -s trainF
-#   bash run_v39_BCD_frozen.sh 2>&1 | tee train_v39_BCD_frozen.log
+#   tmux new -s trainF2
+#   bash run_v39_BCD_frozen.sh 2>&1 | tee train_v39_BCD_frozen2.log
 #
-# 产物（独立 run_id, 不覆盖漂移版 rt_v39_taskX）:
-#   $LOGS_ROOT/rt_v39f_taskB--40000_chkpt
-#   $LOGS_ROOT/rt_v39f_taskC--40000_chkpt
-#   $LOGS_ROOT/rt_v39f_taskD--40000_chkpt
-# 验证点: Stage 2 日志里 # total trainable params 应从 ~4.5亿 降到 ~300万
+# 产物（独立 run_id rt_v39f2, 不覆盖 v1 的 rt_v39f_taskX）:
+#   $LOGS_ROOT/rt_v39f2_taskB--40000_chkpt
+#   $LOGS_ROOT/rt_v39f2_taskC--40000_chkpt
+#   $LOGS_ROOT/rt_v39f2_taskD--40000_chkpt
+# 验证点: Stage 2 日志里 # total trainable params 应 ~300万 (漂移版是 4.5亿)
 # =============================================================================
 
 set -u
@@ -47,11 +51,11 @@ echo "[OK] VLA_PATH    = $VLA_PATH"
 echo "[OK] LOGS_ROOT   = $LOGS_ROOT"
 echo "[OK] Stage1 ckpt = $CKPT_A (FiLM 冻结源)"
 echo "[OK] GPUS        = $GPUS"
-echo "============ 开始 冻结FiLM 版 Stage 2 -> 3 -> 4 连续训练 ============"
+echo "============ 开始 冻结FiLM+冻结共享层 v2 Stage 2 -> 3 -> 4 连续训练 ============"
 
 cd "$TRAIN_DIR" || { echo "[FAIL] 目录不存在: $TRAIN_DIR"; exit 1; }
 
-# 与漂移版完全相同的公共超参（只多/改了 FiLM 冻结逻辑, 在代码里）
+# 与 v1 完全相同的公共超参 (冻结逻辑在代码里: FiLM + 共享层 block_scale)
 COMMON_ARGS=(--batch_size 1 --grad_accumulation_steps 4 --learning_rate 5e-4
   --lr_warmup_steps 200 --num_steps_before_decay 100000
   --use_cl_lora True --lora_rank 16 --shared_depth 8 --first_lora_layer 16
@@ -81,18 +85,18 @@ run_stage() {  # $1=stage  $2=dataset  $3=run_id  $4=prev_checkpoint_dir  $5=pre
     echo "[OK] Stage $stage ($ds) 完成 -> $LOGS_ROOT/$rid--40000_chkpt"
 }
 
-# Stage 2: Task B = grab_roller, 从 Task A checkpoint 续训（FiLM 自此冻结）
-run_stage 2 aloha_grab_roller_clean rt_v39f_taskB "$CKPT_A" 30000
+# Stage 2: Task B = grab_roller, 从 Task A checkpoint 续训（FiLM + 共享层自此冻结）
+run_stage 2 aloha_grab_roller_clean rt_v39f2_taskB "$CKPT_A" 30000
 
 # Stage 3: Task C = stack_bowls_two
-run_stage 3 aloha_stack_bowls_two_clean rt_v39f_taskC "$LOGS_ROOT/rt_v39f_taskB--40000_chkpt" 40000
+run_stage 3 aloha_stack_bowls_two_clean rt_v39f2_taskC "$LOGS_ROOT/rt_v39f2_taskB--40000_chkpt" 40000
 
 # Stage 4: Task D = open_laptop
-run_stage 4 aloha_open_laptop_clean rt_v39f_taskD "$LOGS_ROOT/rt_v39f_taskC--40000_chkpt" 40000
+run_stage 4 aloha_open_laptop_clean rt_v39f2_taskD "$LOGS_ROOT/rt_v39f2_taskC--40000_chkpt" 40000
 
 echo ""
-echo "==== 冻结FiLM 版 Stage 2 + 3 + 4 全部完成 ===="
-echo "    B: $LOGS_ROOT/rt_v39f_taskB--40000_chkpt"
-echo "    C: $LOGS_ROOT/rt_v39f_taskC--40000_chkpt"
-echo "    D: $LOGS_ROOT/rt_v39f_taskD--40000_chkpt"
-echo "    之后评估: bash policy/openvla-oft/eval_sequence.sh \$LOGS_ROOT/rt_v39f_taskD--40000_chkpt 6,7 50 v39fD A B C D"
+echo "==== 冻结FiLM+共享层 v2 Stage 2 + 3 + 4 全部完成 ===="
+echo "    B: $LOGS_ROOT/rt_v39f2_taskB--40000_chkpt"
+echo "    C: $LOGS_ROOT/rt_v39f2_taskC--40000_chkpt"
+echo "    D: $LOGS_ROOT/rt_v39f2_taskD--40000_chkpt"
+echo "    之后评估: bash policy/openvla-oft/eval_sequence.sh \$LOGS_ROOT/rt_v39f2_taskD--40000_chkpt 6,7 50 v39f2D A B C D"
