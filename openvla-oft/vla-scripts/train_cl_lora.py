@@ -102,6 +102,10 @@ class TrainCLConfig:
     # ---- Model ----
     vla_path: str = "openvla/openvla-7b"
 
+    # ---- FiLM 控制 ----
+    freeze_film_stage2: bool = False     # True=Stage>1 冻结 FiLM(高保留); False=漂移版(低残留基线)
+    film_lr_scale: float = 1.0           # FiLM 参数学习率 = 主lr × scale (漂移力度旋钮, 1.0=原行为)
+
     # ---- Dataset ----
     data_root_dir: Path = Path("datasets/rlds")
     dataset_name: str = "libero_spatial_no_noops"
@@ -689,10 +693,11 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             vla.vision_backbone.load_state_dict(_pending_vision_state)
         vla.vision_backbone = vla.vision_backbone.to(device_id)
 
-        # ===== 方案 A: Stage>1 冻结 FiLM（视觉特征不再随新任务漂移）=====
-        # FiLM (~450M) 不在 task bank 里, Stage 2+ 继续训练会让旧任务视觉特征错位,
-        # 恢复旧任务 bank 也救不回。冻结后所有任务共享 Stage 1 学到的视觉调制。
-        if cfg.stage > 1:
+        # ===== 方案 A (可选): Stage>1 冻结 FiLM =====
+        # FiLM (~450M) 不在 task bank 里, Stage 2+ 继续训练会让旧任务视觉特征错位。
+        # 默认 False = 漂移版 (v39 原版行为, 作为"无回放低残留基线");
+        # 传 --freeze_film_stage2 True = 冻结版 (视觉特征恒定, 高保留)。
+        if cfg.stage > 1 and cfg.freeze_film_stage2:
             for p in vla.vision_backbone.parameters():
                 p.requires_grad = False
             print("[FiLM] Stage>1: vision_backbone (含 FiLM) 已冻结, 视觉特征恒定")
@@ -777,7 +782,20 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     if action_head is not None:
         trainable_params += [p for p in action_head.parameters() if p.requires_grad]
     print(f"# total trainable params: {sum(p.numel() for p in trainable_params)}")
-    optimizer = AdamW(trainable_params, lr=cfg.learning_rate)
+    if cfg.use_film and cfg.film_lr_scale < 1.0:
+        # 分层学习率: FiLM (vision_backbone 的可训练参数) 用更低 lr —— 控制"漂移力度"
+        # 无回放基线里, 这是把旧任务残留从"极端遗忘(0)"调回"少量残留(0.2左右)"的旋钮
+        vb_param_ids = set(id(p) for p in vla.module.vision_backbone.parameters())
+        main_params = [p for p in trainable_params if id(p) not in vb_param_ids]
+        film_params = [p for p in trainable_params if id(p) in vb_param_ids]
+        optimizer = AdamW([
+            {"params": main_params, "lr": cfg.learning_rate},
+            {"params": film_params, "lr": cfg.learning_rate * cfg.film_lr_scale},
+        ])
+        print(f"[Optimizer] FiLM 分层 lr: 主干 {cfg.learning_rate:.1e}, "
+              f"FiLM {cfg.learning_rate * cfg.film_lr_scale:.1e} (scale={cfg.film_lr_scale})")
+    else:
+        optimizer = AdamW(trainable_params, lr=cfg.learning_rate)
     original_lr = optimizer.param_groups[0]["lr"]
     scheduler = MultiStepLR(optimizer, milestones=[cfg.num_steps_before_decay], gamma=0.1)
 

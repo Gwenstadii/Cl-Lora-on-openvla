@@ -61,7 +61,8 @@ COMMON_ARGS=(--batch_size 1 --grad_accumulation_steps 4 --learning_rate 5e-4
   --use_cl_lora True --lora_rank 16 --shared_depth 8 --first_lora_layer 16
   --orthogonal_init True --freeze_a True --use_block_scale True --freeze_specific_a True
   --use_kd False --use_replay False --image_aug True
-  --use_proprio True --use_film True --num_images_in_input 3)
+  --use_proprio True --use_film True --num_images_in_input 3
+  --freeze_film_stage2 True)
 
 run_stage() {  # $1=stage  $2=dataset  $3=run_id  $4=prev_checkpoint_dir  $5=prev_step
     local stage=$1 ds=$2 rid=$3 prev_dir=$4 prev_step=$5
