@@ -242,7 +242,9 @@ def _freeze_and_reinit_modules(modules, freeze_specific_a: bool, reinit: bool) -
         if module.is_shared:
             module.lora_a.requires_grad = False
             module.lora_b.requires_grad = False
-            frozen += 2
+            if module.block_scale is not None:
+                module.block_scale.requires_grad = False   # 修复: 共享层 block_scale 此前漏冻结, Stage2+ 持续漂移
+            frozen += 3
         elif freeze_specific_a:
             module.lora_a.requires_grad = False
             frozen += 1
