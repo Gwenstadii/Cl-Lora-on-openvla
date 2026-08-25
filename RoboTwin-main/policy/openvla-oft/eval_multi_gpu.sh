@@ -51,6 +51,7 @@ eval_task_id=${7:-0}
 episodes=${8:-50}
 result_tag=${9:-$(date +%Y%m%d_%H%M%S)}
 film_gamma=${10:-1.0}   # 评估端 FiLM 恢复程度: 1=完全恢复任务FiLM, 0=不恢复(漂移行为), 0~1=插值
+film_scope=${11:-all}   # FiLM 部分恢复范围: all/siglip/dinov2/k<N>(前N个block)
 
 if [ ! -d "$checkpoint_path" ]; then
     echo "ERROR: checkpoint 目录不存在: $checkpoint_path"
@@ -107,6 +108,7 @@ for i in $(seq 0 $((num_workers - 1))); do
         --eval_episodes ${per_worker} \
         --eval_result_tag ${result_tag} \
         --film_gamma ${film_gamma} \
+        --film_scope ${film_scope} \
         2>&1 | tee "$log_file" \
         | grep --line-buffered -E "Success!|Fail!|Success rate|Error|Traceback" \
         | sed "s/^/  [w${i}|GPU ${gpu}] /" &

@@ -312,13 +312,41 @@ def save_task_bank(model, action_head, bank_dir: str, stage: int) -> None:
     print(f"[TaskBank] Saved stage {stage} bank ({len(bank)} tensors, incl. FiLM) → {path}")
 
 
-def load_task_bank(model, action_head, bank_path: str, film_gamma: float = 1.0) -> None:
+def _in_film_scope(key: str, scope: str) -> bool:
+    """判断 FiLM state_dict key 是否属于指定恢复范围."""
+    if not scope or scope == "all":
+        return True
+    # 只处理 FiLM 参数 (scale/shift), 冻结的 ViT 权重不属于调制层
+    if "scale" not in key and "shift" not in key:
+        return False
+    is_fused = "fused_featurizer" in key
+    is_siglip = ("featurizer" in key) and not is_fused
+    if scope == "siglip":
+        return is_siglip
+    if scope == "dinov2":
+        return is_fused
+    if scope.startswith("k"):
+        import re
+        m = re.search(r"blocks\.(\d+)\.", key)
+        if m and int(m.group(1)) < int(scope[1:]):
+            return True
+        return False
+    return True
+
+
+def load_task_bank(model, action_head, bank_path: str, film_gamma: float = 1.0, film_scope: str = "all") -> None:
     """Load per-task bank: restore specific LoRA-B + block_scale + action_head (+ FiLM).
 
     film_gamma: FiLM 恢复程度 (评估端标定旋钮):
       1.0 = 完全恢复该任务 FiLM (高保留, 各任务回到"刚训完"水平)
       0.0 = 不恢复 (用当前 checkpoint 的 FiLM, 即原漂移行为)
       0~1 之间 = 任务 FiLM 与当前 FiLM 线性插值 (残留量连续可调)
+
+    film_scope: FiLM 部分恢复范围 (只恢复选中的层, 其余保持当前 checkpoint 的):
+      "all"    = 全部 FiLM (默认)
+      "siglip" = 只恢复 SigLIP 主干的 FiLM (featurizer.*)
+      "dinov2" = 只恢复 DINOv2 主干的 FiLM (fused_featurizer.*)
+      "k<N>"   = 只恢复每个主干前 N 个 block 的 FiLM (如 k10)
     """
     bank = torch.load(bank_path, map_location='cpu', weights_only=True)
     for name, module in model.named_modules():
@@ -346,17 +374,19 @@ def load_task_bank(model, action_head, bank_path: str, film_gamma: float = 1.0) 
     if "vision_backbone" in bank and getattr(model, "vision_backbone", None) is not None:
         vb = model.vision_backbone
         task_film = bank["vision_backbone"]
+        cur = vb.state_dict()
+        # 按 scope 过滤要恢复的层: all / siglip / dinov2 / k<N>(前N个block)
+        selected = {k for k in task_film if k in cur and _in_film_scope(k, film_scope)}
         if film_gamma >= 1.0:
-            vb.load_state_dict(task_film, strict=False)
-            print(f"[TaskBank] Loaded vision_backbone (FiLM) from bank")
-        elif film_gamma > 0.0:
-            cur = vb.state_dict()
-            mixed = {}
-            for k, tv in task_film.items():
-                if k in cur:
-                    mixed[k] = (film_gamma * tv.to(cur[k].device).float()
-                                + (1.0 - film_gamma) * cur[k].float()).to(cur[k].dtype)
+            mixed = {k: task_film[k] for k in selected}
             vb.load_state_dict(mixed, strict=False)
-            print(f"[TaskBank] FiLM 插值恢复 γ={film_gamma} ({len(mixed)} tensors)")
+            print(f"[TaskBank] FiLM 恢复 scope={film_scope} ({len(mixed)}/{len(task_film)} tensors)")
+        elif film_gamma > 0.0:
+            mixed = {}
+            for k in selected:
+                mixed[k] = (film_gamma * task_film[k].to(cur[k].device).float()
+                            + (1.0 - film_gamma) * cur[k].float()).to(cur[k].dtype)
+            vb.load_state_dict(mixed, strict=False)
+            print(f"[TaskBank] FiLM 插值恢复 γ={film_gamma} scope={film_scope} ({len(mixed)} tensors)")
         else:
             print(f"[TaskBank] film_gamma=0, 不恢复 FiLM (保持当前 checkpoint 的 FiLM)")
