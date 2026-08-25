@@ -105,6 +105,9 @@ class TrainCLConfig:
     # ---- FiLM 控制 ----
     freeze_film_stage2: bool = False     # True=Stage>1 冻结 FiLM(高保留); False=漂移版(低残留基线)
     film_lr_scale: float = 1.0           # FiLM 参数学习率 = 主lr × scale (漂移力度旋钮, 1.0=原行为)
+    film_anchor_reg: float = 0.0         # FiLM 锚定正则权重 λ (把 FiLM 拉向 stage1 值, 0=关闭)
+    film_anchor_dir: Optional[str] = None  # 锚定目标 checkpoint (通常 = Stage1 A 的 ckpt)
+    film_anchor_step: Optional[int] = None # 锚定目标 step
 
     # ---- Dataset ----
     data_root_dir: Path = Path("datasets/rlds")
@@ -682,6 +685,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         print(f"[TaskBank] Stage {cfg.stage} trainable after freeze+reinit: {lora_trainable:,}")
 
     # ---- FiLM ----
+    film_anchor_sd = None  # 锚定正则目标 (Stage1 A 的 FiLM 权重)
     if cfg.use_film:
         count_parameters(vla.vision_backbone, "vla.vision_backbone (original)")
         vla.vision_backbone = FiLMedPrismaticVisionBackbone(
@@ -692,6 +696,13 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         if _pending_vision_state is not None:
             vla.vision_backbone.load_state_dict(_pending_vision_state)
         vla.vision_backbone = vla.vision_backbone.to(device_id)
+
+        # 锚定正则目标: Stage1(A) 的 FiLM 权重, 训练循环里每步 L2 拉回
+        if cfg.film_anchor_reg > 0.0 and cfg.stage > 1 and cfg.film_anchor_dir is not None:
+            film_anchor_sd = load_checkpoint(
+                "vision_backbone", cfg.film_anchor_dir, cfg.film_anchor_step or 30000)
+            print(f"[FiLM] 锚定正则开启: λ={cfg.film_anchor_reg}, "
+                  f"anchor={cfg.film_anchor_dir} (step {cfg.film_anchor_step or 30000})")
 
         # ===== 方案 A (可选): Stage>1 冻结 FiLM =====
         # FiLM (~450M) 不在 task bank 里, Stage 2+ 继续训练会让旧任务视觉特征错位。
@@ -840,6 +851,7 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         "loss_task": deque(maxlen=cfg.grad_accumulation_steps),
         "loss_kd": deque(maxlen=cfg.grad_accumulation_steps),
         "loss_replay": deque(maxlen=cfg.grad_accumulation_steps),
+        "loss_anchor": deque(maxlen=cfg.grad_accumulation_steps),
     }
 
     # ---- Training loop ----
@@ -921,6 +933,22 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
 
             # 4. Total loss
             loss_total = loss_task + cfg.lambda_kd * loss_kd + cfg.replay_loss_weight * loss_replay
+
+            # 5. FiLM 锚定正则 (保底方案): 把 FiLM 拉向 Stage1(A) 的值, λ 连续可调漂移量
+            #    低 lr 是"走得慢但持续走"(A 容不下); 锚定是"走远了被拉回"(λ 大时 FiLM 贴住 A)
+            #    → A/C 这类零容忍任务才能留下可控残留(0.2 附近可调)
+            loss_anchor = torch.tensor(0.0, device=device_id)
+            if cfg.film_anchor_reg > 0.0 and film_anchor_sd is not None:
+                reg_sum = 0.0
+                reg_cnt = 0
+                for n, p in vla.module.vision_backbone.named_parameters():
+                    if p.requires_grad and n in film_anchor_sd:
+                        reg_sum = reg_sum + F.mse_loss(p.float(), film_anchor_sd[n].to(p.device).float())
+                        reg_cnt += 1
+                if reg_cnt > 0:
+                    loss_anchor = reg_sum / reg_cnt
+                    loss_total = loss_total + cfg.film_anchor_reg * loss_anchor
+            metrics["loss_anchor"] = loss_anchor.item()
 
             # Store metrics
             metrics["loss_task"] = loss_task.item()
