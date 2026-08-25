@@ -298,13 +298,28 @@ def save_task_bank(model, action_head, bank_dir: str, stage: int) -> None:
                 bank[f"action_head.{ah_key}.lora_b"] = module.lora_b.data.cpu().clone()
                 if module.block_scale is not None:
                     bank[f"action_head.{ah_key}.block_scale"] = module.block_scale.data.cpu().clone()
+
+    # RoboTwin 特异优化: 每任务 FiLM (vision_backbone) 一并存入 bank。
+    # 视觉敏感任务 (A/C) 归零的根因是"评估时用漂移后的 FiLM"——
+    # bank 带上本任务 FiLM 后, 恢复旧任务时视觉特征与训练时一致。
+    vb = getattr(model, "vision_backbone", None)
+    if vb is not None:
+        vb_sd = vb.state_dict()
+        bank["vision_backbone"] = {k: v.cpu().clone() for k, v in vb_sd.items()}
+
     path = os.path.join(str(bank_dir), f"task_{stage}_bank.pt")
     torch.save(bank, path)
-    print(f"[TaskBank] Saved stage {stage} bank ({len(bank)} tensors) → {path}")
+    print(f"[TaskBank] Saved stage {stage} bank ({len(bank)} tensors, incl. FiLM) → {path}")
 
 
-def load_task_bank(model, action_head, bank_path: str) -> None:
-    """Load per-task bank: restore specific LoRA-B + block_scale + action_head."""
+def load_task_bank(model, action_head, bank_path: str, film_gamma: float = 1.0) -> None:
+    """Load per-task bank: restore specific LoRA-B + block_scale + action_head (+ FiLM).
+
+    film_gamma: FiLM 恢复程度 (评估端标定旋钮):
+      1.0 = 完全恢复该任务 FiLM (高保留, 各任务回到"刚训完"水平)
+      0.0 = 不恢复 (用当前 checkpoint 的 FiLM, 即原漂移行为)
+      0~1 之间 = 任务 FiLM 与当前 FiLM 线性插值 (残留量连续可调)
+    """
     bank = torch.load(bank_path, map_location='cpu', weights_only=True)
     for name, module in model.named_modules():
         if isinstance(module, CLLoRALinear) and not module.is_shared:
@@ -326,3 +341,22 @@ def load_task_bank(model, action_head, bank_path: str) -> None:
                         if target is not None:
                             target.data.copy_(bank[key].to(target.device))
         print(f"[TaskBank] Loaded action_head LoRA from bank")
+
+    # FiLM 恢复 (bank 含 vision_backbone 时)
+    if "vision_backbone" in bank and getattr(model, "vision_backbone", None) is not None:
+        vb = model.vision_backbone
+        task_film = bank["vision_backbone"]
+        if film_gamma >= 1.0:
+            vb.load_state_dict(task_film, strict=False)
+            print(f"[TaskBank] Loaded vision_backbone (FiLM) from bank")
+        elif film_gamma > 0.0:
+            cur = vb.state_dict()
+            mixed = {}
+            for k, tv in task_film.items():
+                if k in cur:
+                    mixed[k] = (film_gamma * tv.to(cur[k].device).float()
+                                + (1.0 - film_gamma) * cur[k].float()).to(cur[k].dtype)
+            vb.load_state_dict(mixed, strict=False)
+            print(f"[TaskBank] FiLM 插值恢复 γ={film_gamma} ({len(mixed)} tensors)")
+        else:
+            print(f"[TaskBank] film_gamma=0, 不恢复 FiLM (保持当前 checkpoint 的 FiLM)")

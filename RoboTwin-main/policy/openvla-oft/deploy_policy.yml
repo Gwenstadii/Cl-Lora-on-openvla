@@ -21,3 +21,4 @@ unnorm_key: null
 num_open_loop_steps: 25
 lora_rank: 32
 eval_task_id: 0
+film_gamma: 1.0

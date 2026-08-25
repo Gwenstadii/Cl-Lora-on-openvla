@@ -40,6 +40,7 @@ class InferenceConfig:
     num_open_loop_steps: int = NUM_ACTIONS_CHUNK
     lora_rank: int = 32
     eval_task_id: int = 0
+    film_gamma: float = 1.0   # 评估端 FiLM 恢复程度: 1=完全恢复任务FiLM, 0=不恢复(漂移行为), 0~1=插值
 
 
 def encode_obs(obs: dict) -> dict:
@@ -156,12 +157,12 @@ class Model:
                 self.proprio_projector.load_state_dict(pp_sd)
                 print("[CL-LoRA] loaded proprio_projector")
 
-        # Task bank
+        # Task bank (含 FiLM: bank 里带本任务 vision_backbone 时按 film_gamma 恢复)
         if is_cl and cfg.eval_task_id > 0:
             bp = os.path.join(cfg.pretrained_checkpoint, f"task_{cfg.eval_task_id}_bank.pt")
             if os.path.exists(bp):
-                self._lb(self.vla, self.action_head, bp)
-                print(f"[CL-LoRA] loaded task {cfg.eval_task_id} bank")
+                self._lb(self.vla, self.action_head, bp, film_gamma=cfg.film_gamma)
+                print(f"[CL-LoRA] loaded task {cfg.eval_task_id} bank (film_gamma={cfg.film_gamma})")
 
     def get_action(self, observation: dict):
         obs = encode_obs(observation)
@@ -190,6 +191,7 @@ def get_model(usr_args: dict):
         "num_open_loop_steps": usr_args.get("num_open_loop_steps", NUM_ACTIONS_CHUNK),
         "lora_rank": usr_args.get("lora_rank", 32),
         "eval_task_id": usr_args.get("eval_task_id", 0),
+        "film_gamma": usr_args.get("film_gamma", 1.0),
     }
     return Model(InferenceConfig(**config_args))
 
