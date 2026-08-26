@@ -401,7 +401,10 @@ def parse_args_and_config():
             key = pairs[i].lstrip("--")
             value = pairs[i + 1]
             try:
-                value = eval(value)
+                ev = eval(value)
+                # 只接受基础类型的 eval 结果; 其余(如内置函数名 all/any, 变量名等)保留原字符串
+                if isinstance(ev, (int, float, bool, str, list, dict, tuple, type(None))):
+                    value = ev
             except:
                 pass
             override_dict[key] = value
