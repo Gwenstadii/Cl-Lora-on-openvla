@@ -35,10 +35,13 @@ DATA_DIR="/mnt/data/pengshengdi/RoboTwin-main/data"
 CKPT_A="$LOGS_ROOT/rt_v39_taskA--30000_chkpt"           # Stage 1 最终 checkpoint (回放起点)
 BUFFER_ROOT="$LOGS_ROOT/replay_buffers"                 # buffer 输出目录
 
-# 使用的 GPU（物理卡号, 逗号分隔; 环境变量可覆盖, 默认 4,5 —— 67 卡留给冻结版训练）
-GPUS="${GPUS:-4,5}"
-BUILD_GPU="${BUILD_GPU:-4}"                              # 建 buffer 用的单卡 (取 GPUS 第一张也可)
-BUILD_GPU="${GPUS%%,*}"                                  # 自动取 GPUS 第一张
+# 使用的 GPU（物理卡号, 逗号分隔; 环境变量可覆盖, 默认 4,5,6,7 四卡）
+GPUS="${GPUS:-4,5,6,7}"
+IFS=',' read -ra GPU_ARR <<< "$GPUS"
+NPROC=${#GPU_ARR[@]}
+# 保持有效 batch=8 不变: batch_size=1 × grad_accum × nproc = 8
+GRAD_ACCUM=$((8 / NPROC))
+BUILD_GPU="${GPU_ARR[0]}"                             # 建 buffer 用第一张卡
 
 # 回放超参 (v2 修正: v39r 的 every=1/weight=1.0/kd=1.0 三倍超载压垮新任务 B/C/D 全崩)
 NUM_EPISODES="${NUM_EPISODES:-10}"                       # 每个任务用几条轨迹建 buffer
@@ -62,7 +65,7 @@ ls "$CKPT_A"/cl_lora_adapter.pt "$CKPT_A"/cl_lora_config.json "$CKPT_A"/teacher_
 echo "[OK] VLA_PATH    = $VLA_PATH"
 echo "[OK] LOGS_ROOT   = $LOGS_ROOT"
 echo "[OK] Stage1 ckpt = $CKPT_A"
-echo "[OK] GPUS        = $GPUS (build 用 $BUILD_GPU)"
+echo "[OK] GPUS        = $GPUS (NPROC=$NPROC, grad_accum=$GRAD_ACCUM, 有效batch=8, build 用 $BUILD_GPU)"
 echo "[OK] 回放超参: episodes=$NUM_EPISODES top_k=$TOP_K replay_every=$REPLAY_EVERY replay_w=$REPLAY_WEIGHT kd_w=$KD_WEIGHT"
 echo "============ 开始: 建 buffer -> Stage 2 -> 3 -> 4 (原型回放版) ============"
 
@@ -102,7 +105,7 @@ build_buffer C aloha_stack_bowls_two_clean "$BUFFER_ROOT/taskC" "$LOGS_ROOT/rt_v
 
 # ---------- 2-4) 回放训练 ----------
 # v2: 显式 --freeze_film_stage2 False —— 漂移 FiLM (v39r 意外跑成冻结版, 这里回到原叙事)
-COMMON_ARGS=(--batch_size 1 --grad_accumulation_steps 4 --learning_rate 5e-4
+COMMON_ARGS=(--batch_size 1 --grad_accumulation_steps "$GRAD_ACCUM" --learning_rate 5e-4
   --lr_warmup_steps 200 --num_steps_before_decay 100000
   --use_cl_lora True --lora_rank 16 --shared_depth 8 --first_lora_layer 16
   --orthogonal_init True --freeze_a True --use_block_scale True --freeze_specific_a True
@@ -120,7 +123,7 @@ run_replay_stage() {  # $1=stage  $2=dataset  $3=run_id  $4=prev_dir  $5=prev_st
     echo "    replay buffers: $buffers_csv"
     echo "    teacher: $tdir/teacher_snapshot--$tstep.pt"
     env CUDA_VISIBLE_DEVICES=$GPUS PYTORCH_ALLOC_CONF=expandable_segments:True WANDB_MODE=offline \
-    torchrun --standalone --nproc_per_node 2 vla-scripts/train_cl_lora.py \
+    torchrun --standalone --nproc_per_node $NPROC vla-scripts/train_cl_lora.py \
         --run_root_dir "$LOGS_ROOT" --run_id_override "$rid" \
         --max_steps 40000 --save_freq 10000 \
         --vla_path "$VLA_PATH" \
