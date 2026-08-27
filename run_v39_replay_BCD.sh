@@ -1,9 +1,16 @@
 #!/bin/bash
 # =============================================================================
-# run_v39_replay_BCD.sh — V39 原型回放版: Task B → C → D 连续训练 (Stage 2-4)
+# run_v39_replay_BCD.sh — V39 原型回放 v2: Task B → C → D 连续训练 (Stage 2-4)
 #
-# 目标: 在无回放基线 (A 0.98→0.04→0, C 0.86→0.02 灾难性遗忘) 之上,
-#       用原型回放 + KD 验证旧任务保留率 (预期: 新任务正常学习, 旧任务遗忘率极小)
+# v2 修正 (v39r 教训, 详见 REPLAY_BUG_NOTES.md):
+#   v39r 实际跑成"冻结FiLM+回放", 且 every=1/weight=1.0/kd=1.0 三倍超载
+#   → 新任务 B/C/D 全被压垮 (B=0, C=0, D=0.02), 只有 A=0.9。
+#   v2: ① 显式 --freeze_film_stage2 False (回到"漂移FiLM+回放"原叙事)
+#       ② 回放降频降权 (every 1→4, weight 1.0→0.5)
+#       ③ KD 降权 (1.0→0.2, KD 也会把新任务特定层拉向旧行为)
+#
+# 目标: 无回放基线 (v39b2: A=0, B=0.24, C=0, D=0.8) 之上,
+#       用原型回放 + KD 验证旧任务保留率 (预期: 新任务正常 0.8+, 旧任务明显回升)
 #
 # 流程 (全程自动):
 #   1. 为 Task A/B/C 构建原型回放 buffer (复用训练同款 RLDS 管线, 归一化一致)
@@ -13,8 +20,8 @@
 #
 # 用法（tmux 里前台跑, 实时看输出）:
 #   cd /mnt/data/pengshengdi && git pull && source server_env.sh
-#   tmux new -s trainR
-#   bash run_v39_replay_BCD.sh 2>&1 | tee train_v39_replay_BCD.log
+#   tmux new -s trainR2
+#   bash run_v39_replay_BCD.sh 2>&1 | tee train_v39_replay_BCD2.log
 #
 # 产物 (独立 run_id, 与漂移版 rt_v39_taskX / 冻结版 rt_v39f_taskX 区分):
 #   $LOGS_ROOT/replay_buffers/taskA|taskB|taskC   (原型回放 buffer)
@@ -33,12 +40,12 @@ GPUS="${GPUS:-4,5}"
 BUILD_GPU="${BUILD_GPU:-4}"                              # 建 buffer 用的单卡 (取 GPUS 第一张也可)
 BUILD_GPU="${GPUS%%,*}"                                  # 自动取 GPUS 第一张
 
-# 回放超参 (LIBERO 验证过的默认值)
+# 回放超参 (v2 修正: v39r 的 every=1/weight=1.0/kd=1.0 三倍超载压垮新任务 B/C/D 全崩)
 NUM_EPISODES="${NUM_EPISODES:-10}"                       # 每个任务用几条轨迹建 buffer
 TOP_K="${TOP_K:-3}"                                      # 每 segment 选几帧
-REPLAY_EVERY="${REPLAY_EVERY:-1}"                        # 每 N 步算一次 replay loss
-REPLAY_WEIGHT="${REPLAY_WEIGHT:-1.0}"
-KD_WEIGHT="${KD_WEIGHT:-1.0}"
+REPLAY_EVERY="${REPLAY_EVERY:-4}"                        # 每 N 步算一次 replay loss (v39r=1 太密)
+REPLAY_WEIGHT="${REPLAY_WEIGHT:-0.5}"                    # 回放 loss 权重 (v39r=1.0 太重)
+KD_WEIGHT="${KD_WEIGHT:-0.2}"                            # KD 权重 (v39r=1.0 把新任务拉向旧行为)
 
 # ---------- 前置检查 ----------
 check_env() {
@@ -94,12 +101,13 @@ build_buffer B aloha_grab_roller_clean    "$BUFFER_ROOT/taskB" "$LOGS_ROOT/rt_v3
 build_buffer C aloha_stack_bowls_two_clean "$BUFFER_ROOT/taskC" "$LOGS_ROOT/rt_v39_taskC--40000_chkpt"
 
 # ---------- 2-4) 回放训练 ----------
+# v2: 显式 --freeze_film_stage2 False —— 漂移 FiLM (v39r 意外跑成冻结版, 这里回到原叙事)
 COMMON_ARGS=(--batch_size 1 --grad_accumulation_steps 4 --learning_rate 5e-4
   --lr_warmup_steps 200 --num_steps_before_decay 100000
   --use_cl_lora True --lora_rank 16 --shared_depth 8 --first_lora_layer 16
   --orthogonal_init True --freeze_a True --use_block_scale True --freeze_specific_a True
   --image_aug True --use_proprio True --use_film True --num_images_in_input 3
-  --use_kd True --use_replay True
+  --use_kd True --use_replay True --freeze_film_stage2 False
   --replay_every_n_steps "$REPLAY_EVERY" --replay_loss_weight "$REPLAY_WEIGHT" --lambda_kd "$KD_WEIGHT")
 
 run_replay_stage() {  # $1=stage  $2=dataset  $3=run_id  $4=prev_dir  $5=prev_step  $6=teacher_dir  $7=teacher_step  $8..=buffer_dirs
@@ -131,27 +139,27 @@ run_replay_stage() {  # $1=stage  $2=dataset  $3=run_id  $4=prev_dir  $5=prev_st
     echo "[OK] Stage $stage ($ds) 完成 -> $LOGS_ROOT/$rid--40000_chkpt"
 }
 
-# Stage 2: Task B, replay=A buffer, teacher=A
-run_replay_stage 2 aloha_grab_roller_clean rt_v39r_taskB \
+# Stage 2: Task B, replay=A buffer, teacher=A (run_id v39r2 不覆盖 v39r)
+run_replay_stage 2 aloha_grab_roller_clean rt_v39r2_taskB \
     "$CKPT_A" 30000 \
     "$CKPT_A" 30000 \
     "$BUFFER_ROOT/taskA"
 
 # Stage 3: Task C, replay=A+B buffers, teacher=回放版B
-run_replay_stage 3 aloha_stack_bowls_two_clean rt_v39r_taskC \
-    "$LOGS_ROOT/rt_v39r_taskB--40000_chkpt" 40000 \
-    "$LOGS_ROOT/rt_v39r_taskB--40000_chkpt" 40000 \
+run_replay_stage 3 aloha_stack_bowls_two_clean rt_v39r2_taskC \
+    "$LOGS_ROOT/rt_v39r2_taskB--40000_chkpt" 40000 \
+    "$LOGS_ROOT/rt_v39r2_taskB--40000_chkpt" 40000 \
     "$BUFFER_ROOT/taskA" "$BUFFER_ROOT/taskB"
 
 # Stage 4: Task D, replay=A+B+C buffers, teacher=回放版C
-run_replay_stage 4 aloha_open_laptop_clean rt_v39r_taskD \
-    "$LOGS_ROOT/rt_v39r_taskC--40000_chkpt" 40000 \
-    "$LOGS_ROOT/rt_v39r_taskC--40000_chkpt" 40000 \
+run_replay_stage 4 aloha_open_laptop_clean rt_v39r2_taskD \
+    "$LOGS_ROOT/rt_v39r2_taskC--40000_chkpt" 40000 \
+    "$LOGS_ROOT/rt_v39r2_taskC--40000_chkpt" 40000 \
     "$BUFFER_ROOT/taskA" "$BUFFER_ROOT/taskB" "$BUFFER_ROOT/taskC"
 
 echo ""
-echo "==== 原型回放版 Stage 2 + 3 + 4 全部完成 ===="
-echo "    B: $LOGS_ROOT/rt_v39r_taskB--40000_chkpt"
-echo "    C: $LOGS_ROOT/rt_v39r_taskC--40000_chkpt"
-echo "    D: $LOGS_ROOT/rt_v39r_taskD--40000_chkpt"
+echo "==== 原型回放 v2 (漂移FiLM+降强度回放) Stage 2 + 3 + 4 全部完成 ===="
+echo "    B: $LOGS_ROOT/rt_v39r2_taskB--40000_chkpt"
+echo "    C: $LOGS_ROOT/rt_v39r2_taskC--40000_chkpt"
+echo "    D: $LOGS_ROOT/rt_v39r2_taskD--40000_chkpt"
 echo "    之后评估: bash policy/openvla-oft/eval_sequence.sh \$LOGS_ROOT/rt_v39r_taskD--40000_chkpt 4,5 50 v39rD A B C D"

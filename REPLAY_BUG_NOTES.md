@@ -20,25 +20,32 @@
 - A=0.9 符合"冻结保视觉（v39f 无回放 A=0.7）+ 回放强化"的组合预期
 - **"漂移 FiLM + 回放"实验尚未真正跑过**——如需该配置，必须显式 `--freeze_film_stage2 False`
 
-## 2. B=0（回放污染特定层槽位）——假设待诊断确认
+## 2. B=0 / B/C/D 全崩（回放+KD 超载压垮新任务）——已确认
 
-**现象**：v39r 用 D ckpt 评估 B（eval_task_id=2）= 0；A=0.9。
+**最终结论（2026-08 评估确认）**：v39r 完整结果：
 
-**机制假设（回放梯度污染当前任务特定层）**：
-- Stage 2 (B) 训练时，可训练参数只有 B 的特定层 lora_b + block_scale + action_head lora_b
-- task loss（B 数据）→ 学 B；replay loss（A buffer 样本）→ 复习 A
-- **两者梯度流向同一批参数** → B 特定层被 A 的回放样本污染，变成 A/B 混合体
-- 评估 B 恢复的是被污染权重 → 单任务崩（B=0）
-- 对比 A=0.9：A 是 stage 1（无回放污染），FiLM 冻结 + 回放强化 → 高保留
+| checkpoint | A | B | C | D |
+|---|---|---|---|---|
+| v39r-C | 0.81 | 0.00 | 0.00 | — |
+| v39r-D | 0.90 | — | 0.00 | 0.02 |
 
-**待确认诊断**（若再遇到类似情况先跑）：
-1. B 用自己 ckpt 自评（eval_task_id=2, 10 episode）——自评低 = 污染坐实；自评高 = bank/评估链问题
-2. `md5sum` 对比 B ckpt 与 D ckpt 的 task_2_bank.pt——不一致 = 复制 bug
+**决定性证据**：C 用自己 checkpoint 评估也是 0、D 自评 0.02 —— **新任务根本没学好**。
+根因不是 bank 复制（md5 完好），是**训练强度三倍超载**：
 
-**修复方向**（按成本排序，未实施）：
-- A. 回放专用/独立 LoRA 槽：每任务特定层参数独立，回放梯度进旧任务槽，不污染新任务（~30 行 + 一轮训练）
-- B. 回放 loss 在旧任务 bank 参数上前向（swap bank 后算 replay loss，梯度不进当前特定层）——参考 PI0.5 实现（~40 行）
-- C. 接受缺陷，改叙事（不推荐）
+- v39r 配置: replay_every=1（每步回放）+ replay_weight=1.0 + lambda_kd=1.0（每步 KD）
+- B 阶段每步梯度构成: task(1份) : replay(1份) : KD(1份, 把新任务拉向旧teacher行为)
+- ⇒ B 特定层 2/3 梯度在学 A 的行为 → rank16×8层容量被灌爆 → B/C/D 全崩
+- A 是 stage1 学的 + 回放强化 → 0.9（幸存）
+
+LIBERO 同样 1:1:1 没崩（7D 单臂简单）；RoboTwin 14D 双臂直接压垮。
+**这是强度问题不是机制错误。**
+
+**v2 修复（run_v39_replay_BCD.sh 已改，run_id rt_v39r2）**：
+- `--freeze_film_stage2 False`：显式回到"漂移 FiLM + 回放"原叙事（v39r 意外冻结）
+- replay_every 1→4、replay_weight 1.0→0.5
+- lambda_kd 1.0→0.2
+
+**诊断方法备忘**：新任务用自己 ckpt 自评（eval_task_id=N, 10episode）——低 = 学习被压垮（强度问题）；高 = bank/评估链问题。
 
 ## 3. 评估加速注意事项
 
