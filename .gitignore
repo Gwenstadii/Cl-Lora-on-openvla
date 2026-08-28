@@ -61,3 +61,5 @@ ENV/
 .mypy_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+方法论.md
+docs/openvla_cllora_architecture.html
