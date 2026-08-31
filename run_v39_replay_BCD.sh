@@ -39,8 +39,9 @@ BUFFER_ROOT="$LOGS_ROOT/replay_buffers"                 # buffer 输出目录
 GPUS="${GPUS:-4,5,6,7}"
 IFS=',' read -ra GPU_ARR <<< "$GPUS"
 NPROC=${#GPU_ARR[@]}
-# 保持有效 batch=8 不变: batch_size=1 × grad_accum × nproc = 8
-GRAD_ACCUM=$((8 / NPROC))
+# 保持有效 batch=8 不变: batch_size × grad_accum × nproc = 8
+BATCH_SIZE="${BATCH_SIZE:-1}"                          # 每卡 batch (显存富余时可 2, 吞吐+30~60%)
+GRAD_ACCUM=$((8 / (BATCH_SIZE * NPROC)))
 BUILD_GPU="${GPU_ARR[0]}"                             # 建 buffer 用第一张卡
 # 从第几个 stage 开始 (2/3/4) —— 中途续跑用: START_STAGE=3 跳过已完成的 stage 2
 START_STAGE="${START_STAGE:-2}"
@@ -67,7 +68,7 @@ ls "$CKPT_A"/cl_lora_adapter.pt "$CKPT_A"/cl_lora_config.json "$CKPT_A"/teacher_
 echo "[OK] VLA_PATH    = $VLA_PATH"
 echo "[OK] LOGS_ROOT   = $LOGS_ROOT"
 echo "[OK] Stage1 ckpt = $CKPT_A"
-echo "[OK] GPUS        = $GPUS (NPROC=$NPROC, grad_accum=$GRAD_ACCUM, 有效batch=8, build 用 $BUILD_GPU)"
+echo "[OK] GPUS        = $GPUS (NPROC=$NPROC, batch_size=$BATCH_SIZE, grad_accum=$GRAD_ACCUM, 有效batch=8, build 用 $BUILD_GPU)"
 echo "[OK] START_STAGE = $START_STAGE"
 echo "[OK] 回放超参: episodes=$NUM_EPISODES top_k=$TOP_K replay_every=$REPLAY_EVERY replay_w=$REPLAY_WEIGHT kd_w=$KD_WEIGHT"
 echo "============ 开始: 建 buffer -> Stage 2 -> 3 -> 4 (原型回放版) ============"
@@ -108,7 +109,7 @@ build_buffer C aloha_stack_bowls_two_clean "$BUFFER_ROOT/taskC" "$LOGS_ROOT/rt_v
 
 # ---------- 2-4) 回放训练 ----------
 # v2: 显式 --freeze_film_stage2 False —— 漂移 FiLM (v39r 意外跑成冻结版, 这里回到原叙事)
-COMMON_ARGS=(--batch_size 1 --grad_accumulation_steps "$GRAD_ACCUM" --learning_rate 5e-4
+COMMON_ARGS=(--batch_size "$BATCH_SIZE" --grad_accumulation_steps "$GRAD_ACCUM" --learning_rate 5e-4
   --lr_warmup_steps 200 --num_steps_before_decay 100000
   --use_cl_lora True --lora_rank 16 --shared_depth 8 --first_lora_layer 16
   --orthogonal_init True --freeze_a True --use_block_scale True --freeze_specific_a True
