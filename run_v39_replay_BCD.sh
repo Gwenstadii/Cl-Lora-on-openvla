@@ -42,6 +42,8 @@ NPROC=${#GPU_ARR[@]}
 # 保持有效 batch=8 不变: batch_size=1 × grad_accum × nproc = 8
 GRAD_ACCUM=$((8 / NPROC))
 BUILD_GPU="${GPU_ARR[0]}"                             # 建 buffer 用第一张卡
+# 从第几个 stage 开始 (2/3/4) —— 中途续跑用: START_STAGE=3 跳过已完成的 stage 2
+START_STAGE="${START_STAGE:-2}"
 
 # 回放超参 (v2 修正: v39r 的 every=1/weight=1.0/kd=1.0 三倍超载压垮新任务 B/C/D 全崩)
 NUM_EPISODES="${NUM_EPISODES:-10}"                       # 每个任务用几条轨迹建 buffer
@@ -66,6 +68,7 @@ echo "[OK] VLA_PATH    = $VLA_PATH"
 echo "[OK] LOGS_ROOT   = $LOGS_ROOT"
 echo "[OK] Stage1 ckpt = $CKPT_A"
 echo "[OK] GPUS        = $GPUS (NPROC=$NPROC, grad_accum=$GRAD_ACCUM, 有效batch=8, build 用 $BUILD_GPU)"
+echo "[OK] START_STAGE = $START_STAGE"
 echo "[OK] 回放超参: episodes=$NUM_EPISODES top_k=$TOP_K replay_every=$REPLAY_EVERY replay_w=$REPLAY_WEIGHT kd_w=$KD_WEIGHT"
 echo "============ 开始: 建 buffer -> Stage 2 -> 3 -> 4 (原型回放版) ============"
 
@@ -143,22 +146,28 @@ run_replay_stage() {  # $1=stage  $2=dataset  $3=run_id  $4=prev_dir  $5=prev_st
 }
 
 # Stage 2: Task B, replay=A buffer, teacher=A (run_id v39r2 不覆盖 v39r)
-run_replay_stage 2 aloha_grab_roller_clean rt_v39r2_taskB \
-    "$CKPT_A" 30000 \
-    "$CKPT_A" 30000 \
-    "$BUFFER_ROOT/taskA"
+if [ "$START_STAGE" -le 2 ]; then
+    run_replay_stage 2 aloha_grab_roller_clean rt_v39r2_taskB \
+        "$CKPT_A" 30000 \
+        "$CKPT_A" 30000 \
+        "$BUFFER_ROOT/taskA"
+fi
 
 # Stage 3: Task C, replay=A+B buffers, teacher=回放版B
-run_replay_stage 3 aloha_stack_bowls_two_clean rt_v39r2_taskC \
-    "$LOGS_ROOT/rt_v39r2_taskB--40000_chkpt" 40000 \
-    "$LOGS_ROOT/rt_v39r2_taskB--40000_chkpt" 40000 \
-    "$BUFFER_ROOT/taskA" "$BUFFER_ROOT/taskB"
+if [ "$START_STAGE" -le 3 ]; then
+    run_replay_stage 3 aloha_stack_bowls_two_clean rt_v39r2_taskC \
+        "$LOGS_ROOT/rt_v39r2_taskB--40000_chkpt" 40000 \
+        "$LOGS_ROOT/rt_v39r2_taskB--40000_chkpt" 40000 \
+        "$BUFFER_ROOT/taskA" "$BUFFER_ROOT/taskB"
+fi
 
 # Stage 4: Task D, replay=A+B+C buffers, teacher=回放版C
-run_replay_stage 4 aloha_open_laptop_clean rt_v39r2_taskD \
-    "$LOGS_ROOT/rt_v39r2_taskC--40000_chkpt" 40000 \
-    "$LOGS_ROOT/rt_v39r2_taskC--40000_chkpt" 40000 \
-    "$BUFFER_ROOT/taskA" "$BUFFER_ROOT/taskB" "$BUFFER_ROOT/taskC"
+if [ "$START_STAGE" -le 4 ]; then
+    run_replay_stage 4 aloha_open_laptop_clean rt_v39r2_taskD \
+        "$LOGS_ROOT/rt_v39r2_taskC--40000_chkpt" 40000 \
+        "$LOGS_ROOT/rt_v39r2_taskC--40000_chkpt" 40000 \
+        "$BUFFER_ROOT/taskA" "$BUFFER_ROOT/taskB" "$BUFFER_ROOT/taskC"
+fi
 
 echo ""
 echo "==== 原型回放 v2 (漂移FiLM+降强度回放) Stage 2 + 3 + 4 全部完成 ===="
