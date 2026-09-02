@@ -44,6 +44,11 @@ else
     TASKS=(A B C D)
 fi
 
+# 评估端 FiLM 恢复程度 (透传给 eval_multi_gpu.sh 第 10 参数):
+#   0 = 不恢复任务 FiLM (纯回放/纯漂移口径, 与无回放基线对比用)
+#   1 = 恢复任务 FiLM (bank 自带 FiLM 时, 测"回放+FiLM恢复"上限)
+FILM_GAMMA="${FILM_GAMMA:-1.0}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/../.."   # 到 RoboTwin-main 根
 
@@ -77,9 +82,9 @@ for t in "${TASKS[@]}"; do
     tag_full="${tag}_task${t}"
     eval_log="eval_result/${tag}_task${t}.log"
     echo ""
-    echo "==================== Task $t : $tname (eval_task_id=$tid) ===================="
+    echo "==================== Task $t : $tname (eval_task_id=$tid, film_gamma=$FILM_GAMMA) ===================="
     bash policy/openvla-oft/eval_multi_gpu.sh "$tname" demo_clean "$checkpoint_path" 0 \
-        "$gpus" "$unnorm" "$tid" "$episodes" "$tag_full" 2>&1 | tee "$eval_log"
+        "$gpus" "$unnorm" "$tid" "$episodes" "$tag_full" "$FILM_GAMMA" 2>&1 | tee "$eval_log"
     rc=${PIPESTATUS[0]}
     rate=$(grep -E "Merged success rate" "$eval_log" | tail -1)
     if [ $rc -ne 0 ] || [ -z "$rate" ]; then
