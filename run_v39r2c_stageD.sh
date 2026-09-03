@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# run_v39r2c_stageD.sh — 方案 B: 只重训 Stage 4 (D) + D 阶段冻结 FiLM
+# run_v39r2c_stageD.sh — 方案 B: 只重训 Stage 4 (D) + D 阶段冻结 FiLM + 训完自动评估
 #
 # 背景: v39r2b (加权重训D) 结果 A=0.54 / B=0.88 / C=0 / D=0.80 —— C 依然 0。
 #   机制结论: C 对 FiLM 漂移零容忍 (γ=0.95 都崩), 而回放对 FiLM 只是弱约束
@@ -11,12 +11,16 @@
 # 对照干净性: 与 run_v39r2b_stageD.sh 唯一差异 = --freeze_film_stage2 True
 #   (buffers 加权 A×2+B×1+C×3 保持, 起点/teacher/步数/权重全部相同)
 #
+# 训练完自动评估 (γ=0, 8 worker 全任务 A/B/C/D), 全程无人值守。
+# 控制: EVAL_AFTER_TRAIN=0 关闭自动评估; EVAL_GPUS / EVAL_EPISODES 可调。
+#
 # 用法（tmux 里前台跑）:
 #   cd /mnt/data/pengshengdi && git pull && source server_env.sh
 #   tmux new -s trainD3
 #   bash run_v39r2c_stageD.sh 2>&1 | tee train_v39r2c_D.log
 #
 # 产物: $LOGS_ROOT/rt_v39r2c_taskD--40000_chkpt
+# 结果: eval_result/v39r2cD_summary.txt (自动评估汇总)
 # =============================================================================
 
 set -u
@@ -78,5 +82,31 @@ if [ $rc -ne 0 ]; then
     exit $rc
 fi
 echo "[OK] Stage 4 完成 -> $LOGS_ROOT/rt_v39r2c_taskD--40000_chkpt"
-echo "    之后评估: FILM_GAMMA=0 bash RoboTwin-main/policy/openvla-oft/eval_sequence.sh"
-echo "      \$LOGS_ROOT/rt_v39r2c_taskD--40000_chkpt 4,4,5,5,6,6,7,7 50 v39r2cD A B C D"
+
+# ---------- 训练完成, 自动全任务评估 ----------
+# 控制: EVAL_AFTER_TRAIN=0 关闭; EVAL_GPUS 默认 8 worker; EVAL_EPISODES 默认 50; FILM_GAMMA=0 (纯回放口径)
+if [ "${EVAL_AFTER_TRAIN:-1}" = "1" ]; then
+    CKPT_FINAL="$LOGS_ROOT/rt_v39r2c_taskD--40000_chkpt"
+    EVAL_LOG="$(dirname "$TRAIN_DIR")/train_v39r2c_eval.log"
+    echo ""
+    echo "==== 训练完成, 自动开始全任务评估 (γ=0, ${EVAL_GPUS:-4,4,5,5,6,6,7,7}) ===="
+    echo "==== 实时进度见下方, 完整日志: $EVAL_LOG ===="
+    FILM_GAMMA=0 bash /mnt/data/pengshengdi/RoboTwin-main/policy/openvla-oft/eval_sequence.sh \
+        "$CKPT_FINAL" "${EVAL_GPUS:-4,4,5,5,6,6,7,7}" "${EVAL_EPISODES:-50}" v39r2cD A B C D \
+        2>&1 | tee "$EVAL_LOG" | grep -v "svulkan2.*error"
+    rc=${PIPESTATUS[0]}
+    if [ $rc -ne 0 ]; then
+        echo ""
+        echo "[WARN] 自动评估异常 (exit=$rc), 但训练产物完好, 可手动重跑:"
+        echo "  FILM_GAMMA=0 bash RoboTwin-main/policy/openvla-oft/eval_sequence.sh \\"
+        echo "    \$LOGS_ROOT/rt_v39r2c_taskD--40000_chkpt 4,4,5,5,6,6,7,7 50 v39r2cD A B C D"
+    else
+        echo ""
+        echo "==== 自动评估完成, 汇总: eval_result/v39r2cD_summary.txt ===="
+        grep "Merged success rate" "$EVAL_LOG"
+    fi
+else
+    echo "[SKIP] EVAL_AFTER_TRAIN=0, 跳过自动评估。手动评估:"
+    echo "  FILM_GAMMA=0 bash RoboTwin-main/policy/openvla-oft/eval_sequence.sh \\"
+    echo "    \$LOGS_ROOT/rt_v39r2c_taskD--40000_chkpt 4,4,5,5,6,6,7,7 50 v39r2cD A B C D"
+fi
