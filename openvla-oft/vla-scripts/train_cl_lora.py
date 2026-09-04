@@ -724,6 +724,17 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             llm_dim=vla.module.llm_dim,
             proprio_dim=PROPRIO_DIM,
         ).to(torch.bfloat16).to(device_id)
+        # 修复: stage 2+ 从上一阶段加载 proprio (与 FiLM 同理)。
+        # 此前每次训练随机初始化 → 各 stage 投影不同 → 旧任务评估时 proprio 输入
+        # 错位 → 依赖 proprio 的视觉敏感任务 (C) 归零 (即使 FiLM/bank 全一致)。
+        if cfg.previous_checkpoint_dir is not None:
+            pp_file = os.path.join(
+                cfg.previous_checkpoint_dir,
+                f"proprio_projector--{cfg.previous_checkpoint_step}_checkpoint.pt")
+            if os.path.exists(pp_file):
+                pp_sd = torch.load(pp_file, map_location="cpu", weights_only=True)
+                proprio_projector.load_state_dict(pp_sd)
+                print(f"[Proprio] Loaded proprio_projector from {pp_file}")
         proprio_projector = wrap_ddp(proprio_projector, device_id)
         count_parameters(proprio_projector, "proprio_projector")
 
@@ -790,19 +801,20 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
 
     # ---- Optimizer ----
     trainable_params = [p for p in vla.parameters() if p.requires_grad]
-    if action_head is not None:
+    if action_head is not None: #动作头参数
         trainable_params += [p for p in action_head.parameters() if p.requires_grad]
-    print(f"# total trainable params: {sum(p.numel() for p in trainable_params)}")
-    if cfg.use_film and cfg.film_lr_scale < 1.0:
+    print(f"# total trainable params: {sum(p.numel() for p in trainable_params)}") #可训参数总量
+    if cfg.use_film and cfg.film_lr_scale < 1.0: 
         # 分层学习率: FiLM (vision_backbone 的可训练参数) 用更低 lr —— 控制"漂移力度"
         # 无回放基线里, 这是把旧任务残留从"极端遗忘(0)"调回"少量残留(0.2左右)"的旋钮
+        # FiLM 每步用语言嵌入调制视觉特征，训练中持续变化会让旧任务的视觉特征错位，是视觉敏感任务遗忘的主因。把 FiLM 的学习率压低 = 减慢漂移力度。
         vb_param_ids = set(id(p) for p in vla.module.vision_backbone.parameters())
-        main_params = [p for p in trainable_params if id(p) not in vb_param_ids]
-        film_params = [p for p in trainable_params if id(p) in vb_param_ids]
+        main_params = [p for p in trainable_params if id(p) not in vb_param_ids]# LoRA 参数 + 动作头参数
+        film_params = [p for p in trainable_params if id(p) in vb_param_ids]#vision_backbone 里可训的（FiLM scale/shift 的权重和偏置）
         optimizer = AdamW([
             {"params": main_params, "lr": cfg.learning_rate},
             {"params": film_params, "lr": cfg.learning_rate * cfg.film_lr_scale},
-        ])
+        ])#两组用不同的 lr
         print(f"[Optimizer] FiLM 分层 lr: 主干 {cfg.learning_rate:.1e}, "
               f"FiLM {cfg.learning_rate * cfg.film_lr_scale:.1e} (scale={cfg.film_lr_scale})")
     else:
@@ -856,16 +868,17 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
 
     # ---- Training loop ----
     with tqdm.tqdm(total=cfg.max_steps, leave=True) as progress:
-        vla.train()
+        vla.train() #
         if action_head is not None:
             action_head.train()
-        optimizer.zero_grad()
+        optimizer.zero_grad() #
 
         for batch_idx, batch in enumerate(dataloader):
-            gradient_step_idx = batch_idx // cfg.grad_accumulation_steps
+          #batch_idx每从数据管线取一个 batch 就 +1，每grad_accumulation_steps个batch_idx  gradient_step_idx+1，默认grad_accumulation_steps=1
+            gradient_step_idx = batch_idx // cfg.grad_accumulation_steps#把 micro-batch 序号换算成梯度步序号。例如 grad_accumulation_steps=4：batch 0–3 → 梯度步 0，batch 4–7 → 梯度步 1……
             log_step = gradient_step_idx
 
-            # 1. Current task forward pass
+            # 1. Current task forward pass = 拿当前任务的一个 batch，跑一遍学生模型，在连续动作空间算出 L1 损失，并把学生预测（带梯度）交给下一步 KD。
             compute_diffusion_l1 = cfg.use_diffusion and batch_idx % cfg.diffusion_sample_freq == 0
             loss_task, metrics, student_pred, _ = run_forward_pass_extended(
                 vla=vla, action_head=action_head,
