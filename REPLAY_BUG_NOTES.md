@@ -61,16 +61,40 @@ LIBERO 同样 1:1:1 没崩（7D 单臂简单）；RoboTwin 14D 双臂直接压�
 | v39b2 漂移版（无回放） | FiLM lr×0.2 + block_scale 冻结 | A=0, B=0.24, C=0, D=0.8 |
 | v39f v1（冻结版） | FiLM 冻结 + block_scale 漂移 | A=0.7, B=0.72, C(Dckpt)=0, C(Cckpt)=高 |
 | v39f2（冻结版 v2） | FiLM + block_scale 全冻结 | 待评估 |
-| v39r（回放版） | **实际=冻结 FiLM + 回放** | A=0.9, B=0, C/D 待 |
+| v39r2c（回放 v2 + 冻结FiLM 重训D） | 冻结 FiLM + buffers A×2+B×1+C×3 | A=0.50, B=0.64, C=0, D=0.79（含 proprio bug） |
+| v39r2d（回放 + proprio 修复重训D） | 冻结 FiLM + proprio 从 prev 加载 | **A/B/C/D 均高（数字待补）** ← proprio bug 修复后 C 恢复 |
 | 锚定正则（保底，未跑） | film_anchor_reg λ | — |
 | FiLM 进 bank（已完成） | bank 存 vision_backbone + film_gamma | γ=1: A/C≈0.9；γ∈[0.1,0.8]: C=0（全或无） |
 
 **FiLM 恢复的"全或无"实证**：γ=0.1~0.8 下 C 全 0，γ=1 才活——参数插值给不了 0.2-0.5 中间残留。
+**⚠️ 上述 v39/v39b2/v39f/v39r/v39r2/v39r2b/v39r2c 数字均含 proprio 随机投影 bug（见 §5），旧任务评估被污染，结论待重审。**
 
-## 5. 待办
+## 5. proprio_projector 随机初始化 bug（C 类任务归零的隐藏根因，已修复 33202d9）
 
-- [ ] 诊断 v39r B=0（自评 + md5）
-- [ ] 决定回放修复方向（独立槽 / swap bank 前向）
-- [ ] 决定"漂移+回放"是否补跑（--freeze_film_stage2 False）
-- [ ] v39f2 全任务评估（验证 block_scale 冻结后 C 是否恢复）
+**现象**：v39r2c（冻结 FiLM，task_3_bank / vision_backbone 与 C 自评 **md5 完全一致**）评 C 仍 = 0，而 C 自评 0.95——文件级对比暴露唯一残留差异：**proprio_projector**。
+
+**根因**：train_cl_lora.py 每次训练**全新随机初始化** ProprioProjector，从不从上一阶段加载（对比 FiLM 是从 prev 加载的）。各 stage 的 proprio 投影 = 不同随机矩阵：
+- Stage N 训练：模型在随机投影 P_N 下学习（P_N 从不训练、仅被"适应"）
+- 评估旧任务 K（用 stage M>K 的 ckpt）：加载 P_M ≠ P_K → proprio 输入错位
+- 依赖 proprio 的视觉敏感任务（C 精确堆叠）→ 归零；A/B 容错大只降幅
+
+**历史影响（重要）**：bug 存在于所有 stage 2+ 训练，"任何 D ckpt 评 C=0、C 自己 ckpt 评 C 高"
+的现象可能**部分归因于 proprio 而非 FiLM/block_scale/回放**：
+- v39f 的 C=0（当时归因 block_scale 漂移）需重审
+- "漂移 FiLM + 回放救不回 C"（v39r2b 结论）需重审——proprio 修复后可能本来就该恢复
+- 无回放基线（v39b2 的 A=0/C=0）可能被 proprio 因素夸大
+
+**修复（33202d9）**：stage 2+ 时 proprio_projector 从 previous_checkpoint_dir 加载
+（全任务共享 stage1 投影，与 FiLM 同机制）。日志标志：`[Proprio] Loaded proprio_projector from ...`。
+
+**v39r2d（修复版重训 D）**：冻结 FiLM + proprio 修复 → C 恢复（成功率很高，数字待补）。
+**待验证**：漂移 FiLM + proprio 修复（freeze_film_stage2=False）下 C 是否也恢复 → 决定"冻结 FiLM 是否必要"。
+
+## 6. 待办
+
+- [x] 诊断 v39r B=0（= 回放+KD 超载压垮新任务，见 §2）
+- [ ] 漂移 FiLM + proprio 修复对照（freeze_film_stage2=False，只重训 D 或全 BCD）→ 决定冻结是否必要
+- [ ] 决策：无回放基线是否带 proprio 修复重跑（历史基线被污染）
+- [ ] v39r2d 完整数字入册（REPLAY_BUG_NOTES + 方法论.md）
+- [ ] 方法论.md 同步（proprio bug、历史结论标注"待重审"）
 - [ ] 锚定正则 λ 实验（无回放"可控残留"最后手段）
