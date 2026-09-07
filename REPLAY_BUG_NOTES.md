@@ -62,12 +62,23 @@ LIBERO 同样 1:1:1 没崩（7D 单臂简单）；RoboTwin 14D 双臂直接压�
 | v39f v1（冻结版） | FiLM 冻结 + block_scale 漂移 | A=0.7, B=0.72, C(Dckpt)=0, C(Cckpt)=高 |
 | v39f2（冻结版 v2） | FiLM + block_scale 全冻结 | 待评估 |
 | v39r2c（回放 v2 + 冻结FiLM 重训D） | 冻结 FiLM + buffers A×2+B×1+C×3 | A=0.50, B=0.64, C=0, D=0.79（含 proprio bug） |
-| v39r2d（回放 + proprio 修复重训D） | 冻结 FiLM + proprio 从 prev 加载 | **A/B/C/D 均高（数字待补）** ← proprio bug 修复后 C 恢复 |
+| v39r2d（回放 + proprio 修复重训D） | 冻结 FiLM + proprio 从 prev 加载 | A=0.62, B=0.88, C=0.88, D=0.80 ← proprio bug 修复后 C 恢复（定稿） |
+| v39b3（无回放, proprio 修复, A冻结） | 漂移FiLM lr0.2 + A冻结 + proprio修复 | A=0.26, B=0.88, C=0.72, D=0.82 |
+| v39b4（无回放, proprio 修复, A漂移） | FiLM冻结 + freeze_specific_a=False | A=0, B=0.57, C=0, D=0.85 |
 | 锚定正则（保底，未跑） | film_anchor_reg λ | — |
 | FiLM 进 bank（已完成） | bank 存 vision_backbone + film_gamma | γ=1: A/C≈0.9；γ∈[0.1,0.8]: C=0（全或无） |
 
+**实验配对关系（无回放 ↔ 回放，同配置才算干净对照）**：
+
+| 无回放 | 回放 | 配对状态 |
+|---|---|---|
+| v39（漂移FiLM lr1.0, bug）0-0.42-0.02-0.82 | **v39r2**（lr1.0+回放降载）0.69-0.80-0-0.75 | ✅ 同 FiLM lr（均含 proprio bug，同环境） |
+| v39b2（lr0.2, bug）0-0.24-0-0.86 | **无**（lr0.2+回放从未跑） | ❌ 空洞——b2 无同配置回放配对 |
+| v39b3（lr0.2+修复）0.26-0.88-0.72-0.82 | 无（修复版漂移+回放未跑 = v39r2e 待跑） | ❌ 空洞 |
+| v39b4（A漂移+修复）0-0.57-0-0.85 | 无（False+回放未跑 = v39r2f 待跑） | ❌ 空洞 |
+
 **FiLM 恢复的"全或无"实证**：γ=0.1~0.8 下 C 全 0，γ=1 才活——参数插值给不了 0.2-0.5 中间残留。
-**⚠️ 上述 v39/v39b2/v39f/v39r/v39r2/v39r2b/v39r2c 数字均含 proprio 随机投影 bug（见 §5），旧任务评估被污染，结论待重审。**
+**⚠️ v39/v39b2/v39f/v39r/v39r2/v39r2b/v39r2c 数字均含 proprio 随机投影 bug（见 §5）；v39b3/v39b4/v39r2d 为修复后干净数字。**
 
 ## 5. proprio_projector 随机初始化 bug（C 类任务归零的隐藏根因，已修复 33202d9）
 
