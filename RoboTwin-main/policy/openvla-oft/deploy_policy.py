@@ -70,11 +70,14 @@ class Model:
             self._lb = load_task_bank
 
         # Load base VLA (from base model if CL-LoRA, without FiLM first)
+        # 注意: use_film 统一 False —— FiLM 在下方手动 wrap。
+        # 普通 LoRA (merged) 若走 _apply_film_to_vla 会按 yml 的 lora_rank(32) 重建 PEFT,
+        # 与训练 rank(16) 结构不一致 → vision_backbone state_dict 加载失败。
         base_cfg = InferenceConfig(
             pretrained_checkpoint=BASE_MODEL_PATH if is_cl else cfg.pretrained_checkpoint,
             use_l1_regression=cfg.use_l1_regression,
             use_diffusion=cfg.use_diffusion,
-            use_film=False if is_cl else cfg.use_film,  # FiLM applied after CL-LoRA injection
+            use_film=False,  # FiLM applied manually below (CL and plain-LoRA)
             use_proprio=cfg.use_proprio,
             num_images_in_input=cfg.num_images_in_input,
             unnorm_key=cfg.unnorm_key,
@@ -100,28 +103,35 @@ class Model:
                 self.vla.load_state_dict(sd, strict=False)
                 print("[CL-LoRA] loaded adapter")
 
-            # Apply FiLM after CL-LoRA injection and load vision_backbone from checkpoint
-            if cfg.use_film:
-                from prismatic.models.film_vit_wrapper import FiLMedPrismaticVisionBackbone
-                self.vla.vision_backbone = FiLMedPrismaticVisionBackbone(
-                    vision_backbone=self.vla.vision_backbone,
-                    llm_dim=self.vla.llm_dim,
-                ).to(dtype=torch.bfloat16)
-                vb_pattern = os.path.join(cfg.pretrained_checkpoint, "vision_backbone--*_checkpoint.pt")
-                vb_files = sorted(glob.glob(vb_pattern))
-                if vb_files:
-                    vb_sd = torch.load(vb_files[-1], map_location="cpu", weights_only=True)
-                    self.vla.vision_backbone.to("cuda")
-                    self.vla.vision_backbone.load_state_dict(vb_sd, strict=False)
-                    print("[CL-LoRA] loaded vision_backbone (FiLM)")
-            self.vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
-
             # Load dataset statistics (needed for action unnormalization during inference)
             ds_file = os.path.join(cfg.pretrained_checkpoint, "dataset_statistics.json")
             if os.path.exists(ds_file):
                 with open(ds_file, "r") as f:
                     self.vla.norm_stats = json.load(f)
                 print("[CL-LoRA] loaded dataset statistics")
+
+        # FiLM wrap (CL 与普通 LoRA 统一: merged/完整权重 + 手动 wrap, 不经过 PEFT 重建)
+        if cfg.use_film:
+            from prismatic.models.film_vit_wrapper import FiLMedPrismaticVisionBackbone
+            self.vla.vision_backbone = FiLMedPrismaticVisionBackbone(
+                vision_backbone=self.vla.vision_backbone,
+                llm_dim=self.vla.llm_dim,
+            ).to(dtype=torch.bfloat16)
+            vb_pattern = os.path.join(cfg.pretrained_checkpoint, "vision_backbone--*_checkpoint.pt")
+            vb_files = sorted(glob.glob(vb_pattern))
+            if vb_files:
+                vb_sd = torch.load(vb_files[-1], map_location="cpu", weights_only=True)
+                if not is_cl:
+                    # 普通 LoRA: 训练时保存的 vision_backbone 含未 merge 的 PEFT LoRA 层,
+                    # 且底层 ViT 是 merge 前 base 值 —— 只加载 FiLM 层 (scale/shift),
+                    # 避免覆盖 merged 权重里的微调 ViT。
+                    vb_sd = {k: v for k, v in vb_sd.items()
+                             if ("scale" in k or "shift" in k) and "lora" not in k}
+                    print(f"[FiLM] plain-LoRA: 仅加载 FiLM 层 ({len(vb_sd)} tensors)")
+                self.vla.vision_backbone.to("cuda")
+                self.vla.vision_backbone.load_state_dict(vb_sd, strict=False)
+                print(f"[FiLM] loaded vision_backbone from {vb_files[-1]}")
+        self.vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
 
         # Processor: use base model path (not checkpoint) for CL-LoRA
         proc_cfg = InferenceConfig(
