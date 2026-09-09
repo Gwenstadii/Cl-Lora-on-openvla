@@ -8,15 +8,17 @@
 #   与 CL-LoRA 支线 (v39b4) / 方法 (v39r2d) 形成对比层级:
 #     普通 LoRA (全漂移) < CL-LoRA 无回放 < CL-LoRA + 回放
 #
-# 实现: vla-scripts/finetune.py (主仓库版, 与当前 prismatic 同代)
-#   use_cl_lora=False 默认 → PEFT LoraConfig(target_modules="all-linear")
-#   merge_lora_during_training=True → 每 checkpoint 存 merged 全模型
+# 公平化 (v2): --lora_scope cl —— 注入范围与 CL-LoRA 逐组件对齐
+#   (仅 L16-31 attn+ffn, 视觉/投影器冻结, proprio 冻结), 唯一差异 =
+#   PEFT 标准 LoRA vs CL-LoRA (正交A+冻结+block_scale) 结构。
+#
+# 实现: vla-scripts/finetune.py + merge_lora_during_training (每阶段 merged 全模型)
 #   stage 衔接 = 下一阶段 --vla_path 指向上阶段 merged ckpt 目录
 #
 # 用法（tmux 里前台跑, 训完自动评估）:
 #   cd /mnt/data/pengshengdi && git pull && source server_env.sh
-#   tmux new -s trainLoRA
-#   bash run_lora_BCD.sh 2>&1 | tee train_lora_BCD.log
+#   tmux new -s trainLoRA2
+#   bash run_lora_BCD.sh 2>&1 | tee train_lora_BCD2.log
 #
 # 产物: $LOGS_ROOT/rt_lora_taskA/B/C/D--{step}_chkpt (merged 全模型)
 # 结果: eval_result/loraD_task*.log 的 Merged success rate
@@ -65,6 +67,7 @@ run_finetune() {  # $1=stage  $2=dataset  $3=run_id  $4=max_steps  $5=vla_path
         --use_l1_regression True --use_diffusion False \
         --use_film True --use_proprio True --num_images_in_input 3 \
         --use_lora True --lora_rank 16 --lora_dropout 0.0 \
+        --lora_scope cl \
         --merge_lora_during_training True --image_aug True
     local rc=$?
     if [ $rc -ne 0 ]; then
