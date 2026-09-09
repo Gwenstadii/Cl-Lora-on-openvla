@@ -882,15 +882,16 @@ def finetune(cfg: FinetuneConfig) -> None:
             lora_params = sum(p.numel() for p in vla.parameters() if p.requires_grad)
             print(f"[CL-LoRA] LoRA trainable params after freeze: {lora_params:,}")
         else:
+            if cfg.lora_scope == "cl":
+                # 与 CL-LoRA 对齐: 仅 L16-31 的 attn q/k/v/o + ffn gate/up/down (PEFT regex)
+                target_modules = r"model\.layers\.(1[6-9]|2[0-9]|3[01])\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)"
+            else:
+                target_modules = "all-linear"
             lora_config = LoraConfig(
                 r=cfg.lora_rank,
                 lora_alpha=cfg.lora_rank,
                 lora_dropout=cfg.lora_dropout,
-        if cfg.lora_scope == "cl":
-            # 与 CL-LoRA 对齐: 仅 L16-31 的 attn q/k/v/o + ffn gate/up/down (PEFT regex)
-            target_modules = r"model\\.layers\\.(1[6-9]|2[0-9]|3[01])\\.(self_attn\\.(q|k|v|o)_proj|mlp\\.(gate|up|down)_proj)"
-        else:
-            target_modules = "all-linear"
+                target_modules=target_modules,
                 init_lora_weights="gaussian",
             )
             vla = get_peft_model(vla, lora_config)
