@@ -12,6 +12,7 @@ from experiments.robot.openvla_utils import (
     get_processor,
     get_action_head,
     get_proprio_projector,
+    load_component_state_dict,
     get_vla_action,
 )
 
@@ -164,7 +165,8 @@ class Model:
             pp_pattern = os.path.join(cfg.pretrained_checkpoint, "proprio_projector--*_checkpoint.pt")
             pp_files = sorted(glob.glob(pp_pattern))
             if pp_files:
-                pp_sd = torch.load(pp_files[-1], map_location="cpu", weights_only=True)
+                # finetune.py (普通 LoRA) 保存的 proprio 带 DDP "module." 前缀, 用 load_component_state_dict 剥除
+                pp_sd = load_component_state_dict(pp_files[-1])
                 self.proprio_projector.load_state_dict(pp_sd)
                 print("[CL-LoRA] loaded proprio_projector")
 
