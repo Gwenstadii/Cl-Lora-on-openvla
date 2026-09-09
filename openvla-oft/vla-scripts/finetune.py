@@ -111,6 +111,9 @@ class FinetuneConfig:
                                                      #   Note: Merging can be very slow on some machines. If so, set to
                                                      #         False and merge final checkpoint offline!
 
+    # LoRA 注入范围: "all" = 官方 all-linear (默认); "cl" = 与 CL-LoRA 逐组件对齐
+    # (仅 L16-31 的 q/k/v/o/gate/up/down + proprio 不训练 + 其余冻结; head 保持全参数为已知差异)
+    lora_scope: str = "all"
     # CL-LoRA (continual learning LoRA)
     use_cl_lora: bool = False                        # If True, injects CL-LoRA (CLLoRALinear) instead of standard PEFT LoRA
     shared_depth: int = 16                           # Number of shared (shallow) layers with frozen LoRA-A
@@ -883,7 +886,11 @@ def finetune(cfg: FinetuneConfig) -> None:
                 r=cfg.lora_rank,
                 lora_alpha=cfg.lora_rank,
                 lora_dropout=cfg.lora_dropout,
-                target_modules="all-linear",
+        if cfg.lora_scope == "cl":
+            # 与 CL-LoRA 对齐: 仅 L16-31 的 attn q/k/v/o + ffn gate/up/down (PEFT regex)
+            target_modules = r"model\\.layers\\.(1[6-9]|2[0-9]|3[01])\\.(self_attn\\.(q|k|v|o)_proj|mlp\\.(gate|up|down)_proj)"
+        else:
+            target_modules = "all-linear"
                 init_lora_weights="gaussian",
             )
             vla = get_peft_model(vla, lora_config)
@@ -968,6 +975,10 @@ def finetune(cfg: FinetuneConfig) -> None:
     if cfg.use_diffusion:
         trainable_params += [param for param in noisy_action_projector.parameters() if param.requires_grad]
     if cfg.use_proprio:
+        if cfg.lora_scope == "cl":
+            # 对齐 CL-LoRA: proprio 冻结不训练 (仅前向提供 proprio 嵌入, 不进 optimizer)
+            for _p in proprio_projector.parameters():
+                _p.requires_grad = False
         trainable_params += [param for param in proprio_projector.parameters() if param.requires_grad]
     print(f"# total trainable params: {sum(p.numel() for p in trainable_params)}")
     optimizer = AdamW(trainable_params, lr=cfg.learning_rate)
