@@ -117,7 +117,7 @@ class Model:
             self.vla.vision_backbone = FiLMedPrismaticVisionBackbone(
                 vision_backbone=self.vla.vision_backbone,
                 llm_dim=self.vla.llm_dim,
-            ).to(dtype=torch.bfloat16)
+            ).to(dtype=torch.bfloat16).to("cuda")   # 新建的 scale/shift 在 CPU, 必须显式移到 cuda
             vb_pattern = os.path.join(cfg.pretrained_checkpoint, "vision_backbone--*_checkpoint.pt")
             vb_files = sorted(glob.glob(vb_pattern))
             if not is_cl:
