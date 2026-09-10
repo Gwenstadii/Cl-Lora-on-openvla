@@ -909,6 +909,18 @@ def finetune(cfg: FinetuneConfig) -> None:
             llm_dim=vla.llm_dim,
         )
         count_parameters(vla.vision_backbone, "vla.vision_backbone (post-wrap)")
+        if cfg.lora_scope == "cl":
+            # 普通 LoRA 公平基线: FiLM 的 scale/shift 默认是随机初始化(非恒等!),
+            # 训练/评估两侧必须一致 —— 这里恒等化(置零)并冻结, 评估端同样置零。
+            # (FiLM 作为 CL-LoRA 的方法组件, 不属于"标准 LoRA"基线的一部分)
+            with torch.no_grad():
+                n_zeroed = 0
+                for _n, _p in vla.vision_backbone.named_parameters():
+                    if _n.split(".")[-2] in ("scale", "shift"):
+                        _p.data.zero_()
+                        _p.requires_grad = False
+                        n_zeroed += 1
+            print(f"[FiLM] lora_scope=cl: {n_zeroed} 个 scale/shift 置零并冻结 (恒等 FiLM)")
         if cfg.resume:
             state_dict = load_checkpoint("vision_backbone", cfg.vla_path, cfg.resume_step)
             vla.model.vision_backbone.load_state_dict(state_dict)

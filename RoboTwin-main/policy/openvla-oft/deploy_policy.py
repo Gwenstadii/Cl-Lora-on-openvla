@@ -120,18 +120,21 @@ class Model:
             ).to(dtype=torch.bfloat16)
             vb_pattern = os.path.join(cfg.pretrained_checkpoint, "vision_backbone--*_checkpoint.pt")
             vb_files = sorted(glob.glob(vb_pattern))
-            if vb_files:
+            if not is_cl:
+                # 普通 LoRA 公平基线: FiLM 恒等化 (训练侧同样置零冻结), 不加载 FiLM 权重。
+                # 注意: scale/shift 是 nn.Linear 随机初始化, 必须置零才是恒等。
+                with torch.no_grad():
+                    n_zeroed = 0
+                    for _n, _p in self.vla.vision_backbone.named_parameters():
+                        if _n.split(".")[-2] in ("scale", "shift"):
+                            _p.data.zero_()
+                            n_zeroed += 1
+                print(f"[FiLM] plain-LoRA: {n_zeroed} 个 scale/shift 置零 (恒等 FiLM, 不加载 vision_backbone ckpt)")
+            elif vb_files:
                 vb_sd = torch.load(vb_files[-1], map_location="cpu", weights_only=True)
                 # 兼容 finetune.py (普通 LoRA) 保存格式: key 可能带 "vision_backbone." 前缀
                 vb_sd = {(k[len("vision_backbone."):] if k.startswith("vision_backbone.") else k): v
                          for k, v in vb_sd.items()}
-                if not is_cl:
-                    # 普通 LoRA: 训练时保存的 vision_backbone 含未 merge 的 PEFT LoRA 层,
-                    # 且底层 ViT 是 merge 前 base 值 —— 只加载 FiLM 层 (scale/shift),
-                    # 避免覆盖 merged 权重里的微调 ViT。
-                    vb_sd = {k: v for k, v in vb_sd.items()
-                             if ("scale" in k or "shift" in k) and "lora" not in k}
-                    print(f"[FiLM] plain-LoRA: 仅加载 FiLM 层 ({len(vb_sd)} tensors)")
                 self.vla.vision_backbone.to("cuda")
                 missing, unexpected = self.vla.vision_backbone.load_state_dict(vb_sd, strict=False)
                 print(f"[FiLM] loaded vision_backbone from {vb_files[-1]} "
