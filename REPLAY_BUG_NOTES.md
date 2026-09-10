@@ -104,11 +104,33 @@ LIBERO 同样 1:1:1 没崩（7D 单臂简单）；RoboTwin 14D 双臂直接压�
 **v39r2d（修复版重训 D）**：冻结 FiLM + proprio 修复 → C 恢复（成功率很高，数字待补）。
 **待验证**：漂移 FiLM + proprio 修复（freeze_film_stage2=False）下 C 是否也恢复 → 决定"冻结 FiLM 是否必要"。
 
-## 6. 待办
+## 7. 三支线配置对比（普通 LoRA / CL-LoRA 无回放 / CL-LoRA+原型回放）
 
-- [x] 诊断 v39r B=0（= 回放+KD 超载压垮新任务，见 §2）
-- [ ] 漂移 FiLM + proprio 修复对照（freeze_film_stage2=False，只重训 D 或全 BCD）→ 决定冻结是否必要
-- [ ] 决策：无回放基线是否带 proprio 修复重跑（历史基线被污染）
-- [ ] v39r2d 完整数字入册（REPLAY_BUG_NOTES + 方法论.md）
-- [ ] 方法论.md 同步（proprio bug、历史结论标注"待重审"）
-- [ ] 锚定正则 λ 实验（无回放"可控残留"最后手段）
+> 详见 `方法论.md` §10.8。核心：方法变量 = LLM 适配结构 + 防遗忘机制；其余组件尽量对齐。
+
+| 维度 | 普通 LoRA（基线） | CL-LoRA 无回放（v39b4） | CL-LoRA+原型回放（v39r2d） |
+|---|---|---|---|
+| 入口/脚本 | finetune.py；run_loraA.sh + run_lora_BCD_afterA.sh | train_cl_lora.py；run_v39b4_baseline_BCD.sh | run_v39r2d_stageD.sh |
+| LLM 注入 | L16-31 × 7 proj（PEFT 正则，rank16） | 同层同模块（CL-LoRA 注入） | 同左 |
+| LoRA 结构 | 标准 PEFT（B@A，随机 A，无门控） | shared(L16-23): 正交A冻结+B冻结；specific(L24-31): A 漂移(False)+B 重训+block_scale | 同左 |
+| action_head | 全参数训练 | CL-LoRA 注入 + bank | 同左 |
+| 视觉/投影器 | 冻结 | 冻结 | 冻结 |
+| FiLM | **恒等**（置零冻结，无调制） | A 训练→stage≥2 冻结 | 同左 |
+| proprio | 冻结；**从 prev 加载**（已对齐） | 不训练 + 从 prev 加载 | 同左 |
+| task bank | 无 | 有 | 有 |
+| 防遗忘机制 | 无（顺序覆盖） | 冻结共享 + bank 隔离 | 冻结 + bank + 回放(every4/w0.5, A×2+B×1+C×3) + KD(λ0.2) |
+| 评估 | eval_task_id=0 | eval_task_id=1..4（bank） | 同左 |
+| 结果 A-B-C-D | 待跑 | 0-0.57-0-0.85 | 0.62-0.88-0.88-0.80 |
+
+**普通 LoRA 修复链（本机→git 已推送）**：
+- `lora_scope cl`（f07d272/741309d/3c01943）：PEFT 正则对齐 L16-31 同模块 + proprio 冻结
+- FiLM 前缀兼容（ff37e09）→ FiLM 恒等化（2a92a05）：scale/shift 是 nn.Linear 随机初始化（非恒等！），两侧置零保证训练/评估一致
+- proprio 从 prev 加载（对齐 CL 33202d9，本轮）：避免每 stage 随机投影错位
+
+## 8. 待办
+
+- [x] v39r2d 完整数字入册（A=0.62, B=0.88, C=0.88, D=0.80）
+- [ ] 普通 LoRA v3（对齐版）训 A + 自评验证（PASS≥0.85 后跑 BCD）
+- [ ] CL-LoRA + uniform 回放支线（#14，回放形式消融）
+- [ ] 方法论.md §10.8 三支线对比（已写入，本机维护）
+- [ ] 锚定正则 λ 实验（备选，未跑）

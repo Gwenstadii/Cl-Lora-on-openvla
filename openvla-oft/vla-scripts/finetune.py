@@ -938,6 +938,17 @@ def finetune(cfg: FinetuneConfig) -> None:
             device_id,
             {"llm_dim": vla.module.llm_dim, "proprio_dim": PROPRIO_DIM},
         )
+        if cfg.lora_scope == "cl":
+            # 对齐 CL-LoRA (33202d9): stage≥2 的 proprio 从上一阶段 ckpt 加载,
+            # 全任务共享同一投影 —— 否则每 stage 新建随机投影会让旧任务评估时
+            # proprio 输入错位, 对基线不公平 (单任务 A 无此问题, vla_path=base 无该文件)
+            import glob as _glob
+            _pp_files = sorted(_glob.glob(os.path.join(cfg.vla_path, "proprio_projector--*_checkpoint.pt")))
+            if _pp_files:
+                _pp_sd = torch.load(_pp_files[-1], map_location="cpu", weights_only=True)
+                _pp_sd = {k[7:] if k.startswith("module.") else k: v for k, v in _pp_sd.items()}
+                proprio_projector.module.load_state_dict(_pp_sd)
+                print(f"[Proprio] loaded from {_pp_files[-1]} (对齐 CL: 全任务共享投影)")
 
     # 🚨 加上这行极其关键的兜底代码
     action_head = None
