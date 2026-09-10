@@ -122,6 +122,9 @@ class Model:
             vb_files = sorted(glob.glob(vb_pattern))
             if vb_files:
                 vb_sd = torch.load(vb_files[-1], map_location="cpu", weights_only=True)
+                # 兼容 finetune.py (普通 LoRA) 保存格式: key 可能带 "vision_backbone." 前缀
+                vb_sd = {(k[len("vision_backbone."):] if k.startswith("vision_backbone.") else k): v
+                         for k, v in vb_sd.items()}
                 if not is_cl:
                     # 普通 LoRA: 训练时保存的 vision_backbone 含未 merge 的 PEFT LoRA 层,
                     # 且底层 ViT 是 merge 前 base 值 —— 只加载 FiLM 层 (scale/shift),
@@ -130,8 +133,9 @@ class Model:
                              if ("scale" in k or "shift" in k) and "lora" not in k}
                     print(f"[FiLM] plain-LoRA: 仅加载 FiLM 层 ({len(vb_sd)} tensors)")
                 self.vla.vision_backbone.to("cuda")
-                self.vla.vision_backbone.load_state_dict(vb_sd, strict=False)
-                print(f"[FiLM] loaded vision_backbone from {vb_files[-1]}")
+                missing, unexpected = self.vla.vision_backbone.load_state_dict(vb_sd, strict=False)
+                print(f"[FiLM] loaded vision_backbone from {vb_files[-1]} "
+                      f"(missing={len(missing)}, unexpected={len(unexpected)})")
         self.vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
 
         # Processor: use base model path (not checkpoint) for CL-LoRA
