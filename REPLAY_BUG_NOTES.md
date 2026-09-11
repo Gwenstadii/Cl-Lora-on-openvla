@@ -65,8 +65,19 @@ LIBERO 同样 1:1:1 没崩（7D 单臂简单）；RoboTwin 14D 双臂直接压�
 | v39r2d（回放 + proprio 修复重训D） | 冻结 FiLM + proprio 从 prev 加载 | A=0.62, B=0.88, C=0.88, D=0.80 ← proprio bug 修复后 C 恢复（定稿） |
 | v39b3（无回放, proprio 修复, A冻结） | 漂移FiLM lr0.2 + A冻结 + proprio修复 | A=0.26, B=0.88, C=0.72, D=0.82 |
 | v39b4（无回放, proprio 修复, A漂移） | FiLM冻结 + freeze_specific_a=False | A=0, B=0.57, C=0, D=0.85 |
+| **普通 LoRA（标准 PEFT 顺序微调，对齐版）** | lora_scope=cl + FiLM恒等 + proprio共享 + 无bank/无回放 | **A=0, B=0, C=0, D=0.82** ← 灾难性遗忘最底层基线 |
 | 锚定正则（保底，未跑） | film_anchor_reg λ | — |
 | FiLM 进 bank（已完成） | bank 存 vision_backbone + film_gamma | γ=1: A/C≈0.9；γ∈[0.1,0.8]: C=0（全或无） |
+
+**三支线对比（定稿实验，详见 方法论.md §10.9）**：
+
+| 支线 | A | B | C | D | 旧任务均值 |
+|---|---|---|---|---|---|
+| 普通 LoRA（无防遗忘） | 0.00 | 0.00 | 0.00 | 0.82 | 0.00 |
+| CL-LoRA 无回放（v39b3） | 0.26 | 0.88 | 0.72 | 0.82 | 0.62 |
+| CL-LoRA+原型回放（v39r2d） | 0.62 | 0.88 | 0.88 | 0.80 | 0.79 |
+
+> 注：v39b3（漂移 FiLM lr0.2）与 v39r2d（冻结 FiLM+回放+KD）差两个变量，结论按"组合效果"表述。
 
 **实验配对关系（无回放 ↔ 回放，同配置才算干净对照）**：
 
