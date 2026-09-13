@@ -23,6 +23,8 @@ IFS=',' read -ra GPU_ARR <<< "$GPUS"
 NPROC=${#GPU_ARR[@]}
 BATCH_SIZE="${BATCH_SIZE:-2}"
 GRAD_ACCUM=$((8 / (BATCH_SIZE * NPROC)))
+# 方法定义: CL-LoRA + 纯回放, 无蒸馏 (USE_KD=False 默认)
+USE_KD="${USE_KD:-False}"
 
 [ -n "${LOGS_ROOT:-}" ] || { echo "[FAIL] LOGS_ROOT 未设置"; exit 1; }
 [ -d "$CKPT_B" ] || { echo "[FAIL] B ckpt 不存在: $CKPT_B —— 先跑 run_v39u_B.sh"; exit 1; }
@@ -61,7 +63,7 @@ run_stage() {  # $1=stage  $2=dataset  $3=run_id  $4=prev_dir  $5=prev_step  $6=
         --lr_warmup_steps 200 --num_steps_before_decay 100000 \
         --use_cl_lora True --lora_rank 16 --shared_depth 8 --first_lora_layer 16 \
         --orthogonal_init True --freeze_a True --use_block_scale True --freeze_specific_a True \
-        --use_kd True --use_replay True --freeze_film_stage2 True \
+        --use_kd "$USE_KD" --use_replay True --freeze_film_stage2 True \
         --replay_every_n_steps 4 --replay_loss_weight 0.5 --lambda_kd 0.2 \
         --image_aug True --use_proprio True --use_film True --num_images_in_input 3
     [ $? -ne 0 ] && { echo "[FAIL] Stage $stage 训练失败"; exit 1; }

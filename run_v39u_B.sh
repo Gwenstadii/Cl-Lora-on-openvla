@@ -32,6 +32,9 @@ NPROC=${#GPU_ARR[@]}
 BATCH_SIZE="${BATCH_SIZE:-2}"
 GRAD_ACCUM=$((8 / (BATCH_SIZE * NPROC)))
 PASS_THRESHOLD="${PASS_THRESHOLD:-0.80}"
+# 方法定义: CL-LoRA + 纯原型/普通回放, **无蒸馏** (USE_KD=False 默认)
+#   USE_KD=True 可切换为"回放+KD"版本 (仅用于消融, 非方法本体)
+USE_KD="${USE_KD:-False}"
 
 check_env() {
     [ -n "${VLA_PATH:-}" ]  || { echo "[FAIL] VLA_PATH 未设置 —— 先 source server_env.sh"; exit 1; }
@@ -107,7 +110,7 @@ else
         --lr_warmup_steps 200 --num_steps_before_decay 100000 \
         --use_cl_lora True --lora_rank 16 --shared_depth 8 --first_lora_layer 16 \
         --orthogonal_init True --freeze_a True --use_block_scale True --freeze_specific_a True \
-        --use_kd True --use_replay True --freeze_film_stage2 True \
+        --use_kd "$USE_KD" --use_replay True --freeze_film_stage2 True \
         --replay_every_n_steps 4 --replay_loss_weight 0.5 --lambda_kd 0.2 \
         --image_aug True --use_proprio True --use_film True --num_images_in_input 3
     [ $? -ne 0 ] && { echo "[FAIL] Stage 2 (B) 训练失败"; exit 1; }
