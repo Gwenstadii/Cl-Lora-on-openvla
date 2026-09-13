@@ -131,10 +131,11 @@ class Model:
                             n_zeroed += 1
                 print(f"[FiLM] plain-LoRA: {n_zeroed} 个 scale/shift 置零 (恒等 FiLM, 不加载 vision_backbone ckpt)")
             elif vb_files:
+                # CL-LoRA: vision_backbone ckpt 的 key 自带 "vision_backbone." 前缀
+                # (FiLM wrapper 的内部属性名), 与评估端 wrap 后模型完全一致 —— 原样加载。
+                # ⚠️ 不要剥前缀: 曾经为兼容普通 LoRA 加过剥离, 导致 CL 端 key 全量错位
+                # (missing=889/unexpected=889 → FiLM 随机初始化 → 旧任务全崩)。
                 vb_sd = torch.load(vb_files[-1], map_location="cpu", weights_only=True)
-                # 兼容 finetune.py (普通 LoRA) 保存格式: key 可能带 "vision_backbone." 前缀
-                vb_sd = {(k[len("vision_backbone."):] if k.startswith("vision_backbone.") else k): v
-                         for k, v in vb_sd.items()}
                 self.vla.vision_backbone.to("cuda")
                 missing, unexpected = self.vla.vision_backbone.load_state_dict(vb_sd, strict=False)
                 print(f"[FiLM] loaded vision_backbone from {vb_files[-1]} "
