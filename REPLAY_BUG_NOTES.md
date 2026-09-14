@@ -122,8 +122,31 @@ LIBERO 同样 1:1:1 没崩（7D 单臂简单）；RoboTwin 14D 双臂直接压�
 **修复（33202d9）**：stage 2+ 时 proprio_projector 从 previous_checkpoint_dir 加载
 （全任务共享 stage1 投影，与 FiLM 同机制）。日志标志：`[Proprio] Loaded proprio_projector from ...`。
 
-**v39r2d（修复版重训 D）**：冻结 FiLM + proprio 修复 → C 恢复（成功率很高，数字待补）。
-**待验证**：漂移 FiLM + proprio 修复（freeze_film_stage2=False）下 C 是否也恢复 → 决定"冻结 FiLM 是否必要"。
+**v39r2d（修复版重训 D）**：冻结 FiLM + proprio 修复 → C 恢复（C=0.88）。
+**已验证（b3）**：漂移 FiLM + proprio 修复 → C 也恢复（0.72）⇒ **冻结 FiLM 非必要**。
+
+### 5.1 遗忘归因链（控制变量推理，最终结论）
+
+> 回答"v39b2 的 0-0.24-0-0.86 是不是 FiLM 漂移造成的"——**不是**。四条支线逐步只改一个变量：
+
+| 支线 | FiLM | specific-A | proprio | 结果 A-B-C-D | 与上一条的唯一差异 → 结论 |
+|---|---|---|---|---|---|
+| v39b2 | 漂移 0.2× | True 冻结 | **bug** | 0-0.24-0-0.86 | 基准（含隐性 proprio bug） |
+| **v39b3** | 漂移 0.2× | True 冻结 | **修复** | **0.26-0.88-0.72-0.82** | 只修 proprio → B +0.64 / C +0.72 / A +0.26 ⇒ **v39b2 崩塌主因 = proprio，非 FiLM** |
+| **v39b6** | 漂移 **1.0×** | True 冻结 | 修复 | 0.27-0.82-?-0.875 | FiLM 漂移强 5 倍 → 几乎不变 ⇒ **FiLM 漂移强度无影响** |
+| **v39b4** | **冻结** | **False 漂移** | 修复 | **0-0.57-0-0.85** | A 由冻结改漂移 → A/C 归零 ⇒ **specific-A 漂移是毁灭性的** |
+
+**遗忘主因排序**：
+```
+proprio_projector 随机错位（隐形，只污染旧任务评估）
+  ≈ specific-A 漂移（LLM 侧 A/B 配对错位，结构性失效）
+  ≫ FiLM 漂移（0.2× vs 1.0× 无差异，几乎可忽略）
+```
+**直接推论**：
+1. **v39b2 与 b4 不可直接对比**（差 proprio 变量）——"b2 崩 ⇒ FiLM 漂移有害"是错误归因；
+2. 防遗忘第一优先级 = **freeze_specific_a=True（A/B 配对完整）+ proprio 跨 stage 一致**；
+3. FiLM 处理（冻结 / 漂移 / bank 恢复）对 retention 影响极小 ⇒ 此前围绕 FiLM 的调参方向（γ 插值、scope、lr 梯度、锚定）**本就不是主要矛盾**；
+4. 需要"含 bug 数字"的结论时先看 §4 末行标注：v39 / v39b2 / v39f / v39r / v39r2 / v39r2b / v39r2c 均不可用于 FiLM 归因。
 
 ## 7. 三支线配置对比（普通 LoRA / CL-LoRA 无回放 / CL-LoRA+原型回放）
 
