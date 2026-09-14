@@ -230,6 +230,22 @@ proprio_projector 随机错位（隐形，只污染旧任务评估）
 **预期对照**：v39r3 vs b4 = 干净单变量（加原型回放）；v39r3 vs v39v = 干净单变量（freeze_specific_a）；v39v vs v39u = 干净单变量（prototype vs uniform）。
 **机制**：stage2+ 只 reinit specific-B + block_scale，specific-A 继续漂移；bank 不存 A ⇒ b4 的 A/C 归零。回放梯度会流进 A ⇒ v39r3 测的是"回放能否把 A 拉回旧任务兼容值"。
 
+### 10.2 每任务 buffer 样本数为什么不同（预算公平性核对）
+
+**不是 bug，是设计的结果**：固定的是"**每任务 `--num-episodes 10` + 每运动段 `--top-k 3`**"，
+样本数 = Σ_episode Σ_segment min(top_k, 可选帧数) ⇒ **随每集运动分段数（任务动作结构）变化**。
+- 分段 = 臂/夹爪差分阈值(0.05/0.1) → 运动模式 run-length → 短段(<5帧)合并；段数越多的任务 buffer 越大；
+- `T < kinematic_window + min_segment_frames` 的极短 episode 被 `continue` 跳过 → 占用 episode 名额但不产样本（`diagnostics.jsonl` 行数可能 < 10）；
+- `top_k` 是上限：inlier 不足或 `temporal_min_gap` 约束下可能选不满（`_select_coverage_representatives`）。
+
+**样本数不进梯度权重（三点公平性）**：
+1. uniform buffer 用 `--match-budget-buffer-dir` **逐任务**匹配原型样本数 → 消融干净；
+2. 每个 buffer 目录 = 独立 DataLoader，`replay_sample_strategy="round_robin"`（train_cl_lora.py:517）轮流取 batch ⇒ **每目录机会均等**，加权只靠目录重复（A×2+B×1+C×3 → 2/6:1/6:3/6）；
+3. every4 × weight0.5 ⇒ replay 占总梯度 ~1/8，与 buffer 大小无关。
+
+**统计工具**：`python vla-scripts/analyze_replay_buffers.py --roots $LOGS_ROOT/replay_buffers $LOGS_ROOT/replay_buffers_uniform --weights taskA=2,taskB=1,taskC=3`
+（读 `meta.json` 的 `saved_replay_samples`/`source_frames`/`compression_ratio`/`num_segments` + `diagnostics.jsonl` 的每集段数，输出各任务样本数、压缩率、段/ep、样本/段，并核对 prototype vs uniform 是否逐任务等额）
+
 > ⚠️ v39u ↔ v39r2d **差 3 个变量**（回放形式 / KD / FiLM 处理），非干净单变量消融；主变量 = 回放形式，
 > KD 与 FiLM 影响预计小（b3≈b6 已证 FiLM 强度无影响）。rt_v39 全系列 freeze_specific_a=True，仅 b4 用 False。
 
