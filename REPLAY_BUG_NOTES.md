@@ -204,9 +204,31 @@ proprio_projector 随机错位（隐形，只污染旧任务评估）
 |---|---|---|---|---|---|
 | v39b4 | 冻结 | **False 漂移** | 无 | 无 | 0-0.57-0-0.85 |
 | v39b3 / b6 | 漂移 0.2× / 1.0× | True 冻结 | 无 | 无 | 0.26-0.88-0.72-0.82 / 0.27-0.82-?-0.875 |
-| **v39r2d** | **B/C 漂移 → D 冻结（混合）** | **True 冻结** | 原型 every4/w0.5+加权 | **有 λ0.2** | 0.62-0.88-0.88-0.80 |
+| **v39r2d** | **B/C 漂移 → D 冻结（混合/脏，仅 D 冻）** | **True 冻结** | 原型 every4/w0.5+加权 | **有 λ0.2** | 0.62-0.88-0.88-0.80 |
 | **v39u** | **全程冻结** | True 冻结 | uniform every4/w0.5+加权 | **无** | 进行中 |
+| **v39v（待跑）** | **全程冻结** | True 冻结 | **原型** every4/w0.5+加权 | 无 | 未跑 |
+| **v39r3（待跑）** | **全程冻结** | **False 漂移** | **原型** every4/w0.5+加权 | 无 | 未跑 |
 | 普通 LoRA | 恒等 | — | 无 | 无 | 0-0-0-0.82 |
+
+### 10.1 缺口核对（2026-08，逐脚本核对）——两个空格
+
+**问题**："冻结 FiLM + specific-A 漂移 + 回放"做过吗？**没有**。核对依据：
+
+1. 所有回放支线（v39r/r2/r2b/r2c/r2d/u）脚本都是 `--freeze_specific_a True`；
+2. 唯一 `--freeze_specific_a False` 的支线是 **v39b4**，而 b4 是 `--use_replay False` → **回放 ∩ A 漂移 = ∅**；
+3. **v39r2d 是脏版**：`run_v39r2d_stageD.sh` 的 `--freeze_film_stage2 True` 只作用于它重训的 **stage D**（起点/teacher = `rt_v39r2_taskC`，B/C bank 来自 v39r2 链：漂移 FiLM + proprio bug 期训练）⇒ 它的准确标签是"**仅 D 阶段冻结 FiLM + 有 KD**"，不能当作"冻结 FiLM + 回放"的证据。
+
+**更意外的发现**：**"全程冻结 FiLM + A 冻结 + 原型回放 + 无 KD"（方法本体的干净配置）同样从未跑过**——v39u 是它的 uniform 版，v39r2d 是它的脏版。⇒ 原型回放行的两个格子都是空白：
+
+| 冻结 FiLM + 无 KD | specific-A 冻结 | specific-A 漂移 |
+|---|---|---|
+| 无回放 | b5（未跑, 可选） | **b4 = 0-0.57-0-0.85** ✅ |
+| **原型回放** | **v39v ← 空白（方法本体）** | **v39r3 ← 空白（回放能否替代 A 冻结）** |
+| uniform 回放 | v39u（在跑） | v39w（可选） |
+
+**补跑脚本**：`run_v39v_prototype_replay.sh`（`FREEZE_SPECIFIC_A=True`→v39v / `False`→v39r3，A ckpt 与原型 buffers 全复用，无需重建）+ `run_v39_prototype_2x2.sh`（两条串行，带 B 自评门禁）。
+**预期对照**：v39r3 vs b4 = 干净单变量（加原型回放）；v39r3 vs v39v = 干净单变量（freeze_specific_a）；v39v vs v39u = 干净单变量（prototype vs uniform）。
+**机制**：stage2+ 只 reinit specific-B + block_scale，specific-A 继续漂移；bank 不存 A ⇒ b4 的 A/C 归零。回放梯度会流进 A ⇒ v39r3 测的是"回放能否把 A 拉回旧任务兼容值"。
 
 > ⚠️ v39u ↔ v39r2d **差 3 个变量**（回放形式 / KD / FiLM 处理），非干净单变量消融；主变量 = 回放形式，
 > KD 与 FiLM 影响预计小（b3≈b6 已证 FiLM 强度无影响）。rt_v39 全系列 freeze_specific_a=True，仅 b4 用 False。
@@ -220,11 +242,13 @@ proprio_projector 随机错位（隐形，只污染旧任务评估）
 
 ## 11. 待办
 
+- [ ] **v39v / v39r3 补跑**（见 §10.1）：`bash run_v39_prototype_2x2.sh`（或 `ARMS="v39r3" ...` 单条）——v39r3 vs b4 是"回放能否替代 A 冻结"的干净单变量，v39v 是方法本体干净配置
 - [ ] v39u 评估（B/C 顺序成功率）→ 与 v39r2d 对比：**回放形式（uniform vs prototype）+ KD（无 vs 有）双重消融**
 - [ ] b6 的 C 重评（数据完整性）
-- [ ] 可选：v39r2e（漂移 FiLM + 回放，回答"冻结 FiLM 是否必要"）；锚定正则（备选）
+- [ ] 可选：v39r2e（漂移 FiLM + 回放，回答"冻结 FiLM 是否必要"）；v39w（uniform + A 漂移）；b5（冻结 FiLM + A 冻结 + 无回放）；锚定正则（备选）
 - [x] 普通 LoRA 对齐版定稿（lora_scope=cl + FiLM恒等 + proprio 共享）→ 0-0-0-0.82
 - [x] b6 重评与结论修正；评估链回归修复（118f974）
+- [x] **缺口核对（§10.1）：确认"冻结 FiLM + A 漂移 + 回放"与"方法本体干净配置"均为空白格**
 
 ## 12. 历史待办（已并入 §11）
 
