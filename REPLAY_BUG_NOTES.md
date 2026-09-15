@@ -263,6 +263,21 @@ proprio_projector 随机错位（隐形，只污染旧任务评估）
 **连带结论**：v39w（uniform + A 漂移）预期同样崩，可省；**v39v（A 冻结 + 全程冻 FiLM + 原型回放 + 无 KD）仍需跑**（方法本体，与 r3 仅差 freeze_specific_a）。
 **r3 指向的新设计方向（待评估）**：把 **specific-A 也存进 bank**（每任务 A_K 快照）→ 评估时 A_K 与 B_K 同时恢复，函数完全复原（保留率≈自评）；即"冻结 A 的正交保护" vs "参数隔离快照"两种范式对比（代价：bank 体积 ↑，`save/load_task_bank` 各加几行）。
 
+### 10.4 "CL-LoRA 无回放"的真实强度 = b3（不是 b4）：回放价值需用同 FiLM 设置的孪生臂证明
+
+**事实核对**：`run_v39b3_baseline_BCD.sh` 明写 `--use_kd False --use_replay False`（+ 漂移 FiLM `film_lr_scale=0.2` + `freeze_specific_a True` + proprio 修复）
+⇒ **b3 本身就是"该配置的 CL-LoRA 无回放"，不是还没做**；**B=0.88 / C=0.72 来自结构保护**（冻结 shared A+B + 冻结 specific-A + bank 隔离 + block_scale 冻结），**不是回放贡献**。
+
+**战略风险（必须先排掉）**：
+1. 拿 b4（A 漂移）当"无回放基线"= 用最弱配置陪衬 → 选择性偏差质疑（b3/b4 只差 `freeze_specific_a`，两者都该报告）；
+2. b3 与现有回放臂（v39r2d/v39v/v39u）**FiLM 设置不同 ⇒ ≥2 变量**，无法单变量归因；
+3. **γ=1 口径下 b3 的 A/C≈0.9**（bank 含任务 FiLM 时可恢复）可能反超 v39r2d 的 A=0.62 ⇒"回放必要性"有被自身基线推翻的风险，必须在投稿前用实验排掉。
+
+**解法（脚本已推 `run_v39r5_driftfilm_replay.sh`）**：v39r5 = **b3 配置 + 原型回放 every4/w0.5 + 无 KD + proprio 修复**，唯一差异 = 回放开关。
+- v39r5 ≫ b3 ⇒ 回放确有边际价值，b3 可作正式基线；
+- v39r5 ≈ b3 ⇒ **CL-LoRA 结构隔离才是主机制**，叙事改为"结构隔离为主 + 回放增强 X"。
+**零成本补数**：b3 的 D ckpt 用 **γ=1** 重评（只评估，不训练）→ 填"bank 含 FiLM 恢复"口径；先查 `task_1_bank.pt` 是否含 `vision_backbone` key。
+
 > ⚠️ v39u ↔ v39r2d **差 3 个变量**（回放形式 / KD / FiLM 处理），非干净单变量消融；主变量 = 回放形式，
 > KD 与 FiLM 影响预计小（b3≈b6 已证 FiLM 强度无影响）。rt_v39 全系列 freeze_specific_a=True，仅 b4 用 False。
 
@@ -275,13 +290,17 @@ proprio_projector 随机错位（隐形，只污染旧任务评估）
 
 ## 11. 待办
 
-- [ ] **v39v / v39r3 补跑**（见 §10.1）：`bash run_v39_prototype_2x2.sh`（或 `ARMS="v39r3" ...` 单条）——v39r3 vs b4 是"回放能否替代 A 冻结"的干净单变量，v39v 是方法本体干净配置
+- [ ] **v39r5（b3 配置 + 原型回放，见 §10.4）← 最高优先**：`bash run_v39r5_driftfilm_replay.sh` —— 单变量测"回放的真实边际价值"，决定论文叙事能否成立
+- [ ] **零成本**：b3 的 D ckpt 用 γ=1 重评（`FILM_GAMMA=1 bash .../eval_sequence.sh $LOGS_ROOT/rt_v39b3_taskD--40000_chkpt 4,4,5,5,6,6,7,7 50 v39b3D_g1 A B C D`）→ 得 bank-FiLM 恢复口径
+- [ ] **v39v / v39r3 补跑**（见 §10.1）：v39r3 已跑（C 崩，见 §10.3）；v39v（方法本体）仍需跑
+- [ ] b5（冻结 FiLM + A 冻结 + 无回放）→ 与 v39v 构成冻结 FiLM 下的回放单变量对
 - [ ] v39u 评估（B/C 顺序成功率）→ 与 v39r2d 对比：**回放形式（uniform vs prototype）+ KD（无 vs 有）双重消融**
 - [ ] b6 的 C 重评（数据完整性）
-- [ ] 可选：v39r2e（漂移 FiLM + 回放，回答"冻结 FiLM 是否必要"）；v39w（uniform + A 漂移）；b5（冻结 FiLM + A 冻结 + 无回放）；锚定正则（备选）
+- [ ] 可选：v39r2e（漂移 FiLM + 回放）；v39w（uniform + A 漂移，预计崩，可省）；锚定正则（备选）
 - [x] 普通 LoRA 对齐版定稿（lora_scope=cl + FiLM恒等 + proprio 共享）→ 0-0-0-0.82
 - [x] b6 重评与结论修正；评估链回归修复（118f974）
 - [x] **缺口核对（§10.1）：确认"冻结 FiLM + A 漂移 + 回放"与"方法本体干净配置"均为空白格**
+- [x] **b3 配置核对（§10.4）：b3 即"CL-LoRA 无回放"本体，其高保留来自结构保护**
 
 ## 12. 历史待办（已并入 §11）
 
