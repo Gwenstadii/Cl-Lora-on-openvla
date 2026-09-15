@@ -142,6 +142,7 @@ class TrainCLConfig:
     freeze_a: bool = True
     use_block_scale: bool = True
     freeze_specific_a: bool = True             # v7: freeze specific A after Stage 1. Set False for cross-domain.
+    bank_film_mode: str = "film"               # task bank 存多少 FiLM: none(不存) | film(只存 scale/shift ~0.2MB) | full(整份 vision_backbone ~2.4GB, 旧行为)
     first_lora_layer: int = 0                  # PI action-expert: only inject LoRA from this layer onward
     clip_weight: float = 1.0
     merge_lora_during_training: bool = False
@@ -1052,7 +1053,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                     if cfg.use_cl_lora:
                         save_task_bank(vla.module,
                                        action_head.module if action_head is not None else None,
-                                       str(checkpoint_dir), cfg.stage)
+                                       str(checkpoint_dir), cfg.stage,
+                                       film_mode=cfg.bank_film_mode)
 
                     print(f"Checkpoint saved at step {log_step} → {checkpoint_dir}")
 
@@ -1106,7 +1108,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                 _sh.copy(old_bank, str(final_dir))
         save_task_bank(vla.module,
                        action_head.module if action_head is not None else None,
-                       str(final_dir), cfg.stage)
+                       str(final_dir), cfg.stage,
+                       film_mode=cfg.bank_film_mode)
         print(f"[TaskBank] Stage {cfg.stage} bank saved to checkpoint")
 
     dist.barrier()

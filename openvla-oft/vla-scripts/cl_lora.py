@@ -280,8 +280,29 @@ def reinit_bank_for_new_task(model, action_head=None) -> None:
     print("[TaskBank] Reinitialized specific LoRA-B + block_scale for new task")
 
 
-def save_task_bank(model, action_head, bank_dir: str, stage: int) -> None:
-    """Save per-task bank: specific LoRA-B + block_scale + action_head."""
+def _is_film_key(key: str) -> bool:
+    """FiLM 调制参数判定: scale/shift（与 _in_film_scope 的默认口径一致）。"""
+    return "scale" in key or "shift" in key
+
+
+def _bank_size_mb(bank: dict) -> float:
+    total = 0
+    for v in bank.values():
+        if torch.is_tensor(v):
+            total += v.numel() * v.element_size()
+        elif isinstance(v, dict):
+            total += sum(t.numel() * t.element_size() for t in v.values() if torch.is_tensor(t))
+    return total / 1e6
+
+
+def save_task_bank(model, action_head, bank_dir: str, stage: int, film_mode: str = "film") -> None:
+    """Save per-task bank: specific LoRA-B + block_scale + action_head (+ FiLM).
+
+    film_mode 控制 vision_backbone 存多少（默认 "film"）:
+      "none" = 不存 FiLM         → bank 最小, 评估端 γ 无效（等价 γ=0）
+      "film" = 只存 scale/shift  → ~0.2MB, γ/scope 能力与 "full" 完全等价（loader 本来就只挑这些 key）
+      "full" = 整份 vision_backbone（旧行为）→ ~2.4GB, 其中 99.99% 是冻结的 ViT 权重, 从未被使用
+    """
     import os
     os.makedirs(str(bank_dir), exist_ok=True)
     bank = {}
@@ -299,17 +320,22 @@ def save_task_bank(model, action_head, bank_dir: str, stage: int) -> None:
                 if module.block_scale is not None:
                     bank[f"action_head.{ah_key}.block_scale"] = module.block_scale.data.cpu().clone()
 
-    # RoboTwin 特异优化: 每任务 FiLM (vision_backbone) 一并存入 bank。
-    # 视觉敏感任务 (A/C) 归零的根因是"评估时用漂移后的 FiLM"——
-    # bank 带上本任务 FiLM 后, 恢复旧任务时视觉特征与训练时一致。
+    # RoboTwin 特异优化: 每任务 FiLM 一并存入 bank (评估端按 film_gamma/scope 恢复)。
+    # 历史: 该诊断诞生于 v39b2 时期("评估用漂移后的 FiLM → A/C 归零"), 后来证明
+    #   A/C 归零主因是 proprio bug + specific-A 配对错位, FiLM 漂移强度几乎不影响
+    #   retention(b3≈b6) ⇒ 主表口径 γ=0 时这份 FiLM 根本不会被读取。
+    # 存储量由 film_mode 控制, 默认 "film"（只存 scale/shift, 体积降 ~10000×）。
     vb = getattr(model, "vision_backbone", None)
-    if vb is not None:
+    if vb is not None and film_mode != "none":
         vb_sd = vb.state_dict()
+        if film_mode == "film":
+            vb_sd = {k: v for k, v in vb_sd.items() if _is_film_key(k)}
         bank["vision_backbone"] = {k: v.cpu().clone() for k, v in vb_sd.items()}
 
     path = os.path.join(str(bank_dir), f"task_{stage}_bank.pt")
     torch.save(bank, path)
-    print(f"[TaskBank] Saved stage {stage} bank ({len(bank)} tensors, incl. FiLM) → {path}")
+    print(f"[TaskBank] Saved stage {stage} bank ({len(bank)} tensors, film_mode={film_mode}, "
+          f"~{_bank_size_mb(bank):.1f} MB) → {path}")
 
 
 def _in_film_scope(key: str, scope: str) -> bool:
@@ -371,22 +397,26 @@ def load_task_bank(model, action_head, bank_path: str, film_gamma: float = 1.0, 
         print(f"[TaskBank] Loaded action_head LoRA from bank")
 
     # FiLM 恢复 (bank 含 vision_backbone 时)
-    if "vision_backbone" in bank and getattr(model, "vision_backbone", None) is not None:
-        vb = model.vision_backbone
-        task_film = bank["vision_backbone"]
-        cur = vb.state_dict()
-        # 按 scope 过滤要恢复的层: all / siglip / dinov2 / k<N>(前N个block)
-        selected = {k for k in task_film if k in cur and _in_film_scope(k, film_scope)}
+    if "vision_backbone" not in bank or getattr(model, "vision_backbone", None) is None:
         if film_gamma >= 1.0:
-            mixed = {k: task_film[k] for k in selected}
-            vb.load_state_dict(mixed, strict=False)
-            print(f"[TaskBank] FiLM 恢复 scope={film_scope} ({len(mixed)}/{len(task_film)} tensors)")
-        elif film_gamma > 0.0:
-            mixed = {}
-            for k in selected:
-                mixed[k] = (film_gamma * task_film[k].to(cur[k].device).float()
-                            + (1.0 - film_gamma) * cur[k].float()).to(cur[k].dtype)
-            vb.load_state_dict(mixed, strict=False)
-            print(f"[TaskBank] FiLM 插值恢复 γ={film_gamma} scope={film_scope} ({len(mixed)} tensors)")
-        else:
-            print(f"[TaskBank] film_gamma=0, 不恢复 FiLM (保持当前 checkpoint 的 FiLM)")
+            print("[TaskBank] ⚠️ bank 不含 FiLM(vision_backbone) —— 跳过 FiLM 恢复, "
+                  "评估使用当前 checkpoint 的 FiLM (等价 γ=0; film_mode=none 时的预期行为)")
+        return
+    vb = model.vision_backbone
+    task_film = bank["vision_backbone"]
+    cur = vb.state_dict()
+    # 按 scope 过滤要恢复的层: all / siglip / dinov2 / k<N>(前N个block)
+    selected = {k for k in task_film if k in cur and _in_film_scope(k, film_scope)}
+    if film_gamma >= 1.0:
+        mixed = {k: task_film[k] for k in selected}
+        vb.load_state_dict(mixed, strict=False)
+        print(f"[TaskBank] FiLM 恢复 scope={film_scope} ({len(mixed)}/{len(task_film)} tensors)")
+    elif film_gamma > 0.0:
+        mixed = {}
+        for k in selected:
+            mixed[k] = (film_gamma * task_film[k].to(cur[k].device).float()
+                        + (1.0 - film_gamma) * cur[k].float()).to(cur[k].dtype)
+        vb.load_state_dict(mixed, strict=False)
+        print(f"[TaskBank] FiLM 插值恢复 γ={film_gamma} scope={film_scope} ({len(mixed)} tensors)")
+    else:
+        print(f"[TaskBank] film_gamma=0, 不恢复 FiLM (保持当前 checkpoint 的 FiLM)")
