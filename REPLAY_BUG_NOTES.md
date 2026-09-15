@@ -246,6 +246,23 @@ proprio_projector 随机错位（隐形，只污染旧任务评估）
 **统计工具**：`python vla-scripts/analyze_replay_buffers.py --roots $LOGS_ROOT/replay_buffers $LOGS_ROOT/replay_buffers_uniform --weights taskA=2,taskB=1,taskC=3`
 （读 `meta.json` 的 `saved_replay_samples`/`source_frames`/`compression_ratio`/`num_segments` + `diagnostics.jsonl` 的每集段数，输出各任务样本数、压缩率、段/ep、样本/段，并核对 prototype vs uniform 是否逐任务等额）
 
+### 10.3 v39r3（A 漂移 + 原型回放）——旧任务 C 保留率低 ⇒ **回放不能替代 A 冻结**（数字待补）
+
+**结果**：C 保留率很低 → 停止后续评估。**先区分两个"C"**：
+- **C 保留率**（D ckpt + bank，`eval_task_id=3`）低 ⇒ 结构性失效（下方机制，**预期结果**）；
+- **C 自评**（C ckpt，`eval_task_id=0`）也低 ⇒ 额外说明 A 漂移**损害新任务学习**（梯度冲突），需单独归因。
+
+**机制（三条，主因是第 1 条）**：
+1. **结构性主因：bank 不存 A，而 A 在漂**。`save_task_bank`(cl_lora.py:283) 只存 specific `lora_b` + `block_scale`（+ FiLM），`load_task_bank` 也只恢复这两样。评估任务 C 时算的是 `W + s·g_C·B_C·A_final`，训练时是 `W + s·g_C·B_C·A_3` ⇒ A 一离开 A_3，B_C 立即失配，D 阶段 40k 步继续放大误差，**没有任何机制能把它拉回**。
+2. **为什么偏偏 C 塌**：C=stack_bowls_two 需精确接触相位与毫米级对位，是全系列对扰动最敏感的任务（proprio 错位时也是 C=0）→ 表征错位"开关式"归零；B=grab_roller 容错大（b4 里 B=0.57 而 A=0）。
+3. **回放为何无效（本次实验的核心答案）**：① **剂量** —— replay 梯度恒占 ~1/8（every4 × w0.5），task loss 每步都在推 A，1:8 拉锯由 task loss 主导；② **方向不对** —— replay 监督的是"旧状态 s → 旧动作 a"的**输出**，并不显式恢复 A_K，而失效发生在"B_K 与 A 的配对"；A 可在不明显抬高 replay loss 的前提下沿新任务方向走（buffer 只覆盖有限状态点，泛化不到整个状态空间）。
+⇒ **结论：回放 = 输出层面的弱正则；A 冻结 = 参数层面的结构保护，回放不能替代 A 冻结**（"为什么必须 freeze_specific_a=True"的最强正面证据）。b4（0-0.57-0-0.85，无回放）与 r3（有回放）构成干净单变量对照。
+
+**排除干扰项（先看这三行日志）**：deploy 的 `missing/unexpected` 计数（应为 0）、`[Proprio] Loaded proprio_projector from ...`、`[TaskBank] Loaded action_head LoRA from bank`。
+**漂移量化工具**：`python vla-scripts/analyze_cl_lora_drift.py --ckpts <A ckpt> <r3 B> <r3 C> <r3 D> --names A B C D`（specific-A 逐层 cos / 相对 L2，判定 bank 恢复误差下界）。
+**连带结论**：v39w（uniform + A 漂移）预期同样崩，可省；**v39v（A 冻结 + 全程冻 FiLM + 原型回放 + 无 KD）仍需跑**（方法本体，与 r3 仅差 freeze_specific_a）。
+**r3 指向的新设计方向（待评估）**：把 **specific-A 也存进 bank**（每任务 A_K 快照）→ 评估时 A_K 与 B_K 同时恢复，函数完全复原（保留率≈自评）；即"冻结 A 的正交保护" vs "参数隔离快照"两种范式对比（代价：bank 体积 ↑，`save/load_task_bank` 各加几行）。
+
 > ⚠️ v39u ↔ v39r2d **差 3 个变量**（回放形式 / KD / FiLM 处理），非干净单变量消融；主变量 = 回放形式，
 > KD 与 FiLM 影响预计小（b3≈b6 已证 FiLM 强度无影响）。rt_v39 全系列 freeze_specific_a=True，仅 b4 用 False。
 
