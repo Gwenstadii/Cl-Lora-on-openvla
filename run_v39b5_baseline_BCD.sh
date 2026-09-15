@@ -61,6 +61,10 @@ COMMON_ARGS=(--batch_size "$BATCH_SIZE" --grad_accumulation_steps "$GRAD_ACCUM" 
 
 run_stage() {  # $1=stage  $2=dataset  $3=run_id  $4=prev_checkpoint_dir  $5=prev_step
     local stage=$1 ds=$2 rid=$3 prev_dir=$4 prev_step=$5
+    if [ -d "$LOGS_ROOT/$rid--40000_chkpt" ]; then
+        echo "[SKIP] $rid--40000_chkpt 已存在"
+        return 0
+    fi
     echo ""
     echo "############ Stage $stage : $ds (from $prev_dir) ############"
     env CUDA_VISIBLE_DEVICES=$GPUS PYTORCH_ALLOC_CONF=expandable_segments:True WANDB_MODE=offline \

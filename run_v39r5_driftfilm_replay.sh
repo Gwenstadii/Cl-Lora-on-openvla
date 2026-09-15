@@ -42,7 +42,7 @@ EVAL_ONE="/mnt/data/pengshengdi/RoboTwin-main/policy/openvla-oft/eval_multi_gpu.
 CKPT_A="$LOGS_ROOT/rt_v39_taskA--30000_chkpt"     # 与 b3 同一起点，复用
 BUF_P="$LOGS_ROOT/replay_buffers"                 # 原型 buffer（与 v39r2d 同源，复用）
 
-PREFIX="v39r5"
+PREFIX="${PREFIX:-v39r5}"                          # 漂移 1.0× 版本: FILM_LR_SCALE=1.0 PREFIX=v39r6
 GPUS="${GPUS:-4,5,6,7}"
 EVAL_GPUS="${EVAL_GPUS:-4,4,5,5,6,6,7,7}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
