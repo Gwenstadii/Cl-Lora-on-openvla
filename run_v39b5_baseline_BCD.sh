@@ -1,23 +1,31 @@
 #!/bin/bash
 # =============================================================================
-# run_v39b5_baseline_BCD.sh — 无回放基线 v5 (v39r2d 的严格无回放镜像)
+# run_v39b5_baseline_BCD.sh — 无回放基线 v5（v39r2d / v39v 的"同配置去掉回放"臂）
 #
-# 目的: 给 v39r2d (0.62-0.88-0.88-0.80, 冻结FiLM+True+修复+回放, 定稿方法)
-#       提供同设置无回放对照: 冻结 FiLM + freeze_specific_a=True + proprio 修复
-#       + 无回放无 KD + 完整 BCD (从 rt_v39_taskA 起)。
+# 定位: **全程冻结 FiLM + specific-A 冻结 + proprio 修复 + 无回放**，从 rt_v39_taskA
+#   起完整重训 B/C/D —— 即"原型回放那条线（0.62-0.88-0.88-0.80）的配置，去掉回放"。
 #
-# ⚠️ 预期预警: 冻结 FiLM + 全冻结共享 + bank 精确恢复 = 无回放也高保留
-#   (v39f 实证 A/B→0.7; proprio 修复后 A 可能更高) —— v39b5 可能 ≥ v39r2d,
-#   对比不显著甚至反超。若只想要"陪衬 v39r2d 的低基线", 用现成 v39b4
-#   (0-0.57-0-0.85, freeze_specific_a=False) 更合适。
+# ⚠️ 与 v39r2d 的差异（必须心里有数，别当成严格单变量）:
+#   ① v39r2d 是"**只重训 D 阶段**"（B/C bank 继承自 v39r2 链：漂移 FiLM 1.0× + proprio bug 时代）
+#      ⇒ 它的 B/C 不是"冻结 FiLM + A 冻结"训练出来的；本脚本全程按干净配置重训，**更干净**；
+#   ② v39r2d 开了 KD λ0.2，本脚本默认 `USE_KD=False`（方法定义=纯回放/无蒸馏口径）。
+#      想与 v39r2d 逐项对齐（含 KD）：`USE_KD=True bash run_v39b5_baseline_BCD.sh`
+#   ⇒ 真正的干净单变量对是 **b5(本脚本) ↔ v39v**（`run_v39v_prototype_replay.sh`）：
+#      两者唯一差异 = 回放开关（冻结 FiLM / A 冻结 / 无 KD / 步数 / 起点全同）。
+#
+# 预期与判读:
+#   · 预警: 冻结 FiLM + 全冻结共享 + bank 精确恢复 ⇒ **无回放也可能很高**
+#     （v39f 实证 A/B≈0.7；b3 在漂移 FiLM 下 B/C 已 0.88/0.72）⇒ b5 可能 ≥ v39r2d；
+#   · 若 b5 ≈ v39v ⇒ 回放边际价值 ≈ 0，叙事改为"结构隔离为主 + 回放增强 X"；
+#   · 若 b5 明显 < v39v ⇒ 回放确有价值，且是干净单变量证据。
 #
 # 用法（tmux 里前台跑, 训完自动评估）:
 #   cd /mnt/data/pengshengdi && git pull && source server_env.sh
 #   tmux new -s trainB5
-#   bash run_v39b5_baseline_BCD.sh 2>&1 | tee train_v39b5_baseline.log
+#   bash run_v39b5_baseline_BCD.sh 2>&1 | tee train_v39b5.log
 #
 # 产物: $LOGS_ROOT/rt_v39b5_taskB/C/D--40000_chkpt
-# 结果: eval_result/v39b5D_summary.txt (自动评估汇总)
+# 结果: eval_result/v39b5D_summary.txt (自动评估汇总, γ=0 口径)
 # =============================================================================
 
 set -u
@@ -28,6 +36,7 @@ CKPT_A="$LOGS_ROOT/rt_v39_taskA--30000_chkpt"     # Stage 1 最终 checkpoint (S
 
 GPUS="${GPUS:-4,5,6,7}"
 BATCH_SIZE="${BATCH_SIZE:-2}"                     # 每卡 batch
+USE_KD="${USE_KD:-False}"                         # 与 v39r2d 逐项对齐时设 True（λ=0.2）
 IFS=',' read -ra GPU_ARR <<< "$GPUS"
 NPROC=${#GPU_ARR[@]}
 GRAD_ACCUM=$((8 / (BATCH_SIZE * NPROC)))          # 有效 batch = 8 不变
@@ -45,8 +54,8 @@ check_env
 echo "[OK] VLA_PATH  = $VLA_PATH"
 echo "[OK] LOGS_ROOT = $LOGS_ROOT"
 echo "[OK] Stage1 ckpt = $CKPT_A"
+echo "[OK] 配置: 全程冻结 FiLM + freeze_specific_a=True + block_scale 冻结 + proprio 修复 + 无回放 | USE_KD=$USE_KD"
 echo "[OK] GPUS=$GPUS | NPROC=$NPROC | batch_size=$BATCH_SIZE | grad_accum=$GRAD_ACCUM (有效batch=8)"
-echo "[OK] 配置: 冻结 FiLM + freeze_specific_a=True + proprio 修复 + 无回放 (v39r2d 镜像)"
 echo "============ 开始 无回放基线v5 Stage 2 -> 3 -> 4 连续训练 ============"
 
 cd "$TRAIN_DIR" || { echo "[FAIL] 目录不存在: $TRAIN_DIR"; exit 1; }
@@ -55,7 +64,7 @@ COMMON_ARGS=(--batch_size "$BATCH_SIZE" --grad_accumulation_steps "$GRAD_ACCUM" 
   --lr_warmup_steps 200 --num_steps_before_decay 100000
   --use_cl_lora True --lora_rank 16 --shared_depth 8 --first_lora_layer 16
   --orthogonal_init True --freeze_a True --use_block_scale True --freeze_specific_a True
-  --use_kd False --use_replay False --image_aug True
+  --use_kd "$USE_KD" --use_replay False --image_aug True
   --use_proprio True --use_film True --num_images_in_input 3
   --freeze_film_stage2 True)
 
@@ -76,6 +85,8 @@ run_stage() {  # $1=stage  $2=dataset  $3=run_id  $4=prev_checkpoint_dir  $5=pre
         --stage "$stage" \
         --previous_checkpoint_dir "$prev_dir" \
         --previous_checkpoint_step "$prev_step" \
+        --teacher_checkpoint_dir "$prev_dir" \
+        --teacher_checkpoint_step "$prev_step" \
         "${COMMON_ARGS[@]}"
     local rc=$?
     if [ $rc -ne 0 ]; then
