@@ -351,6 +351,34 @@ USE_REPLAY=True bash run_v39b7_shared_unfreeze.sh        # 回放孪生臂（同
 ```
 **最有价值的用法不是"造弱基线"，而是 `v39r7`**：测**回放能否替代 shared 冻结**（回放梯度会流进 shared A/B）——若能保住，就支持"回放 = 换取组件自由度"的叙事，这是一条对方法有利的正面结论。
 
+### 10.7 specific-A "冻结量"旋钮：两条路线（2026-08 实现）
+
+> **标签纠正**：**b3 = FiLM 漂移 + specific-A 冻结**（A=0.26 来自 FiLM 失配，γ=1 可救）；
+> **b4/r3 = 冻结 FiLM + specific-A 漂移**。A 恒为 0 的痛点在 **b4/r3** 这条线，不在 b3。
+
+**路线①部分解冻**（`--specific_a_lr_scale`，独立优化器组，含 action head 的 A）：
+预期不高 —— **Adam 的漂移量 ≈ lr × 步数**（不是 ∝ 梯度大小），缩放 0.2× 只是把漂移减速 5 倍；直接证据：FiLM 用 0.2× 跑 3 个 stage 的 A=0.26，与 1.0× 的 0.27 几乎一致 ⇒ **"温和缩放"大概率仍跨阈值**。要落回阈值内可能得 ≤0.02（那时 A≈冻死=b5）。用 **1 段探针**先验证，别花 6 段训练。
+
+**路线②A 入 bank**（`--bank_save_specific_a True`）—— **推荐**：A 全速训练（保留可塑性），bank 每任务额外存 A_K ⇒ 评估时 **A_K + B_K 同时恢复**（`load_task_bank` 已支持 lora_a）⇒ 配对精确复原 ⇒ 保留率≈自评。代价每任务 +~11MB（与已有 B 载荷同量级；`--bank_film_mode film` 已把 bank 从 2.4GB 压到 ~0.2MB）。
+科学价值：把"**冻结 A（正交子空间保护）**" vs "**每任务 A 快照（参数隔离）**"变成两种可比范式。
+
+**⚠️ 继承 bank 的坑（已在脚本里自动处理）**：链式训练中 `task_1_bank.pt` 是从 stage-1 ckpt（`rt_v39_taskA`）**继承**的，由旧代码写出 ⇒ **不含 lora_a** ⇒ 评估任务 A 仍会用漂移后的 A_final（A 照样崩）。评估前必须补：
+```bash
+python vla-scripts/patch_bank_specific_a.py --ckpt-dir $CKPT_D --src-ckpt $LOGS_ROOT/rt_v39_taskA--30000_chkpt \
+    --vla-step 30000 --ah-step 30000      # 从 cl_lora_adapter.pt + action_head--30000.pt 取 specific-A
+```
+（`run_v39b8_speca_knob.sh` 在 `A_IN_BANK=True` 时会在评估前自动调用它。）
+
+**脚本**：`run_v39b8_speca_knob.sh`
+```bash
+# ① 便宜探针（只训 B，1 段）: 测该剂量下 1 个 stage 是否已跨阈值
+STOP_AFTER_STAGE=2 SPEC_A_LR_SCALE=0.05 bash run_v39b8_speca_knob.sh
+# ② A 入 bank（直接达成目标）
+A_IN_BANK=True bash run_v39b8_speca_knob.sh
+# ③ A 入 bank + 原型回放（回答"A 都不用冻了，回放还需要吗"）
+A_IN_BANK=True USE_REPLAY=True bash run_v39b8_speca_knob.sh
+```
+
 ### 10.5 两条臂各自"达到预期"的配置路线（2026-08 设计）
 
 #### 10.5.0 实测: b5（无回放, 全冻结）= A/B 均 >0.9 ⇒ 完整解释（2026-08, 关键转折）
