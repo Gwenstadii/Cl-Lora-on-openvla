@@ -320,13 +320,33 @@ def _bank_size_mb(bank: dict) -> float:
     return total / 1e6
 
 
-def save_task_bank(model, action_head, bank_dir: str, stage: int, film_mode: str = "film") -> None:
-    """Save per-task bank: specific LoRA-B + block_scale + action_head (+ FiLM).
+def specific_a_param_ids(model, action_head=None) -> set:
+    """返回 specific 层（含 action_head 全部注入层）的 lora_a 参数 id 集合。
+    用于 `--specific_a_lr_scale`：给"部分解冻/温和漂移"的 A 单独设 lr。"""
+    ids = set()
+    for m in model.modules():
+        if isinstance(m, CLLoRALinear) and not m.is_shared:
+            ids.add(id(m.lora_a))
+    if action_head is not None:
+        for m in action_head.modules():
+            if isinstance(m, CLLoRALinear):
+                ids.add(id(m.lora_a))
+    return ids
+
+
+def save_task_bank(model, action_head, bank_dir: str, stage: int, film_mode: str = "film",
+                   save_specific_a: bool = False) -> None:
+    """Save per-task bank: specific LoRA-B + block_scale + action_head (+ FiLM, + 可选 specific-A).
 
     film_mode 控制 vision_backbone 存多少（默认 "film"）:
       "none" = 不存 FiLM         → bank 最小, 评估端 γ 无效（等价 γ=0）
       "film" = 只存 scale/shift  → ~0.2MB, γ/scope 能力与 "full" 完全等价（loader 本来就只挑这些 key）
       "full" = 整份 vision_backbone（旧行为）→ ~2.4GB, 其中 99.99% 是冻结的 ViT 权重, 从未被使用
+
+    save_specific_a=True: 额外把 specific 层（含 action_head）的 **lora_a** 一起存入 bank。
+      用途: `freeze_specific_a=False`（A 自由漂移）时，评估任务 K 可同时恢复 A_K + B_K
+      ⇒ 配对精确复原 ⇒ 保留率≈自评（"每任务 A 快照"范式, 与"冻结 A"并列的另一种防遗忘机制）。
+      代价: 每个任务多约 5.6M 参数（bf16 ≈ 11MB），与已有的 B 载荷同量级。
     """
     import os
     os.makedirs(str(bank_dir), exist_ok=True)
@@ -335,6 +355,8 @@ def save_task_bank(model, action_head, bank_dir: str, stage: int, film_mode: str
         if isinstance(module, CLLoRALinear) and not module.is_shared:
             layer_key = name.replace('.', '_')
             bank[f"{layer_key}.lora_b"] = module.lora_b.data.cpu().clone()
+            if save_specific_a:
+                bank[f"{layer_key}.lora_a"] = module.lora_a.data.cpu().clone()
             if module.block_scale is not None:
                 bank[f"{layer_key}.block_scale"] = module.block_scale.data.cpu().clone()
     if action_head is not None:
@@ -342,6 +364,8 @@ def save_task_bank(model, action_head, bank_dir: str, stage: int, film_mode: str
             if isinstance(module, CLLoRALinear):
                 ah_key = name.replace('.', '_')
                 bank[f"action_head.{ah_key}.lora_b"] = module.lora_b.data.cpu().clone()
+                if save_specific_a:
+                    bank[f"action_head.{ah_key}.lora_a"] = module.lora_a.data.cpu().clone()
                 if module.block_scale is not None:
                     bank[f"action_head.{ah_key}.block_scale"] = module.block_scale.data.cpu().clone()
 
@@ -400,26 +424,33 @@ def load_task_bank(model, action_head, bank_path: str, film_gamma: float = 1.0, 
       "k<N>"   = 只恢复每个主干前 N 个 block 的 FiLM (如 k10)
     """
     bank = torch.load(bank_path, map_location='cpu', weights_only=True)
+    loaded_a = 0
     for name, module in model.named_modules():
         if isinstance(module, CLLoRALinear) and not module.is_shared:
             layer_key = name.replace('.', '_')
-            for suffix in ['lora_b', 'block_scale']:
+            for suffix in ['lora_a', 'lora_b', 'block_scale']:
                 key = f"{layer_key}.{suffix}"
                 if key in bank:
                     target = getattr(module, suffix, None)
                     if target is not None:
                         target.data.copy_(bank[key].to(target.device))
+                        if suffix == 'lora_a':
+                            loaded_a += 1
     if action_head is not None:
         for name, module in action_head.named_modules():
             if isinstance(module, CLLoRALinear):
                 ah_key = name.replace('.', '_')
-                for suffix in ['lora_b', 'block_scale']:
+                for suffix in ['lora_a', 'lora_b', 'block_scale']:
                     key = f"action_head.{ah_key}.{suffix}"
                     if key in bank:
                         target = getattr(module, suffix, None)
                         if target is not None:
                             target.data.copy_(bank[key].to(target.device))
+                            if suffix == 'lora_a':
+                                loaded_a += 1
         print(f"[TaskBank] Loaded action_head LoRA from bank")
+    if loaded_a:
+        print(f"[TaskBank] 恢复 specific-A 快照 {loaded_a} 个张量（bank 内含 A ⇒ 配对精确复原）")
 
     # FiLM 恢复 (bank 含 vision_backbone 时)
     if "vision_backbone" not in bank or getattr(model, "vision_backbone", None) is None:

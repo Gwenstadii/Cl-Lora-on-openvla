@@ -45,7 +45,7 @@ from experiments.robot.openvla_utils import (
 from cl_lora import (CLLoRALinear, inject_cl_lora_into_model,
                       inject_cl_lora_into_action_head,
                       freeze_stage1_params, reinit_bank_for_new_task,
-                      save_task_bank, load_task_bank, shared_param_ids)
+                      save_task_bank, load_task_bank, shared_param_ids, specific_a_param_ids)
 from replay_dataset import PrototypeReplayDataset
 
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
@@ -144,6 +144,8 @@ class TrainCLConfig:
     freeze_specific_a: bool = True             # v7: freeze specific A after Stage 1. Set False for cross-domain.
     freeze_shared: bool = True                 # 实验开关: False = 解冻 shared A/B（制造"共享通路漂移"遗忘源, 无 bank 可恢复）
     shared_lr_scale: float = 1.0               # 解冻后 shared A/B 的 lr 缩放（<1 = 温和漂移, 用于得到连续可调的残留曲线）
+    specific_a_lr_scale: float = 1.0           # freeze_specific_a=False 时 A 的 lr 缩放（<1 = "部分解冻", 探 A 漂移阈值）
+    bank_save_specific_a: bool = False         # True = bank 额外存 specific-A 快照（评估时 A_K+B_K 同时恢复 ⇒ 配对精确复原）
     bank_film_mode: str = "film"               # task bank 存多少 FiLM: none(不存) | film(只存 scale/shift ~0.2MB) | full(整份 vision_backbone ~2.4GB, 旧行为)
     first_lora_layer: int = 0                  # PI action-expert: only inject LoRA from this layer onward
     clip_weight: float = 1.0
@@ -838,6 +840,22 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         elif sh_params:
             print(f"[Optimizer] ⚠️ shared A/B 已解冻 {len(sh_params)} 个张量, "
                   f"使用主干 lr={cfg.learning_rate:.1e}（无 bank 可恢复 ⇒ 所有旧任务都会受影响）")
+
+    # "部分解冻" specific-A: 单独缩放 lr（探 A 漂移阈值 / 控制解冻量）
+    if not cfg.freeze_specific_a and cfg.specific_a_lr_scale != 1.0:
+        sa_ids = specific_a_param_ids(vla.module,
+                                      action_head.module if action_head is not None else None)
+        sa_params = [p for p in trainable_params if id(p) in sa_ids]
+        if sa_params:
+            for g in groups:
+                g["params"] = [p for p in g["params"] if id(p) not in sa_ids]
+            groups = [g for g in groups if g["params"]] + \
+                     [{"params": sa_params, "lr": cfg.learning_rate * cfg.specific_a_lr_scale}]
+            print(f"[Optimizer] specific-A 部分解冻 {len(sa_params)} 个张量, "
+                  f"lr={cfg.learning_rate * cfg.specific_a_lr_scale:.1e} (scale={cfg.specific_a_lr_scale})")
+    elif not cfg.freeze_specific_a:
+        print(f"[Optimizer] ⚠️ specific-A 全速可训练（lr={cfg.learning_rate:.1e}, "
+              f"bank {'含' if cfg.bank_save_specific_a else '不含'} A 快照）")
     optimizer = AdamW(groups)
     original_lr = optimizer.param_groups[0]["lr"]
     scheduler = MultiStepLR(optimizer, milestones=[cfg.num_steps_before_decay], gamma=0.1)
@@ -1073,7 +1091,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                         save_task_bank(vla.module,
                                        action_head.module if action_head is not None else None,
                                        str(checkpoint_dir), cfg.stage,
-                                       film_mode=cfg.bank_film_mode)
+                                       film_mode=cfg.bank_film_mode,
+                                       save_specific_a=cfg.bank_save_specific_a)
 
                     print(f"Checkpoint saved at step {log_step} → {checkpoint_dir}")
 
@@ -1129,7 +1148,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         save_task_bank(vla.module,
                        action_head.module if action_head is not None else None,
                        str(final_dir), cfg.stage,
-                       film_mode=cfg.bank_film_mode)
+                       film_mode=cfg.bank_film_mode,
+                       save_specific_a=cfg.bank_save_specific_a)
         print(f"[TaskBank] Stage {cfg.stage} bank saved to checkpoint")
 
     dist.barrier()
