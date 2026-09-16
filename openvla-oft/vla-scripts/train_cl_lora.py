@@ -45,7 +45,7 @@ from experiments.robot.openvla_utils import (
 from cl_lora import (CLLoRALinear, inject_cl_lora_into_model,
                       inject_cl_lora_into_action_head,
                       freeze_stage1_params, reinit_bank_for_new_task,
-                      save_task_bank, load_task_bank)
+                      save_task_bank, load_task_bank, shared_param_ids)
 from replay_dataset import PrototypeReplayDataset
 
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
@@ -142,6 +142,8 @@ class TrainCLConfig:
     freeze_a: bool = True
     use_block_scale: bool = True
     freeze_specific_a: bool = True             # v7: freeze specific A after Stage 1. Set False for cross-domain.
+    freeze_shared: bool = True                 # 实验开关: False = 解冻 shared A/B（制造"共享通路漂移"遗忘源, 无 bank 可恢复）
+    shared_lr_scale: float = 1.0               # 解冻后 shared A/B 的 lr 缩放（<1 = 温和漂移, 用于得到连续可调的残留曲线）
     bank_film_mode: str = "film"               # task bank 存多少 FiLM: none(不存) | film(只存 scale/shift ~0.2MB) | full(整份 vision_backbone ~2.4GB, 旧行为)
     first_lora_layer: int = 0                  # PI action-expert: only inject LoRA from this layer onward
     clip_weight: float = 1.0
@@ -680,8 +682,9 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
 
     # ---- PI Task Bank: freeze shared knowledge, reinit bank for new task ----
     if cfg.use_cl_lora and cfg.stage > 1 and cfg.previous_checkpoint_dir is not None and not cfg.skip_reinit:
-        freeze_stage1_params(vla, freeze_specific_a=cfg.freeze_specific_a)
-        reinit_bank_for_new_task(vla)
+        freeze_stage1_params(vla, freeze_specific_a=cfg.freeze_specific_a,
+                             freeze_shared=cfg.freeze_shared)
+        reinit_bank_for_new_task(vla, freeze_shared=cfg.freeze_shared)
         lora_trainable = sum(p.numel() for p in vla.parameters() if p.requires_grad)
         print(f"[TaskBank] Stage {cfg.stage} trainable after freeze+reinit: {lora_trainable:,}")
 
@@ -805,21 +808,37 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     if action_head is not None: #动作头参数
         trainable_params += [p for p in action_head.parameters() if p.requires_grad]
     print(f"# total trainable params: {sum(p.numel() for p in trainable_params)}") #可训参数总量
-    if cfg.use_film and cfg.film_lr_scale < 1.0: 
+    if cfg.use_film and cfg.film_lr_scale < 1.0:
         # 分层学习率: FiLM (vision_backbone 的可训练参数) 用更低 lr —— 控制"漂移力度"
         # 无回放基线里, 这是把旧任务残留从"极端遗忘(0)"调回"少量残留(0.2左右)"的旋钮
         # FiLM 每步用语言嵌入调制视觉特征，训练中持续变化会让旧任务的视觉特征错位，是视觉敏感任务遗忘的主因。把 FiLM 的学习率压低 = 减慢漂移力度。
         vb_param_ids = set(id(p) for p in vla.module.vision_backbone.parameters())
         main_params = [p for p in trainable_params if id(p) not in vb_param_ids]# LoRA 参数 + 动作头参数
         film_params = [p for p in trainable_params if id(p) in vb_param_ids]#vision_backbone 里可训的（FiLM scale/shift 的权重和偏置）
-        optimizer = AdamW([
-            {"params": main_params, "lr": cfg.learning_rate},
-            {"params": film_params, "lr": cfg.learning_rate * cfg.film_lr_scale},
-        ])#两组用不同的 lr
+        groups = [{"params": main_params, "lr": cfg.learning_rate},
+                  {"params": film_params, "lr": cfg.learning_rate * cfg.film_lr_scale}]
         print(f"[Optimizer] FiLM 分层 lr: 主干 {cfg.learning_rate:.1e}, "
               f"FiLM {cfg.learning_rate * cfg.film_lr_scale:.1e} (scale={cfg.film_lr_scale})")
     else:
-        optimizer = AdamW(trainable_params, lr=cfg.learning_rate)
+        groups = [{"params": trainable_params, "lr": cfg.learning_rate}]
+
+    # 解冻 shared A/B 时支持单独缩放 lr（连续可调"共享通路漂移"剂量）
+    if not cfg.freeze_shared:
+        sh_ids = shared_param_ids(vla.module)
+        sh_params = [p for p in trainable_params if id(p) in sh_ids]
+        need = cfg.shared_lr_scale != 1.0
+        if sh_params and need:
+            # 从已有组里摘掉 shared 参数, 再单独成组
+            for g in groups:
+                g["params"] = [p for p in g["params"] if id(p) not in sh_ids]
+            groups = [g for g in groups if g["params"]] + \
+                     [{"params": sh_params, "lr": cfg.learning_rate * cfg.shared_lr_scale}]
+            print(f"[Optimizer] shared A/B 已解冻 {len(sh_params)} 个张量, "
+                  f"lr={cfg.learning_rate * cfg.shared_lr_scale:.1e} (scale={cfg.shared_lr_scale})")
+        elif sh_params:
+            print(f"[Optimizer] ⚠️ shared A/B 已解冻 {len(sh_params)} 个张量, "
+                  f"使用主干 lr={cfg.learning_rate:.1e}（无 bank 可恢复 ⇒ 所有旧任务都会受影响）")
+    optimizer = AdamW(groups)
     original_lr = optimizer.param_groups[0]["lr"]
     scheduler = MultiStepLR(optimizer, milestones=[cfg.num_steps_before_decay], gamma=0.1)
 
@@ -1100,7 +1119,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
     if cfg.use_cl_lora and distributed_state.is_main_process:
         if cfg.stage == 1:
             freeze_stage1_params(vla.module, freeze_specific_a=cfg.freeze_specific_a,
-                                action_head=action_head.module if action_head is not None else None)
+                                action_head=action_head.module if action_head is not None else None,
+                                freeze_shared=cfg.freeze_shared)
         # Copy old task banks from previous checkpoint
         if cfg.previous_checkpoint_dir is not None:
             import glob as _g; import shutil as _sh

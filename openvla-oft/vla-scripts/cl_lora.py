@@ -233,18 +233,25 @@ def inject_cl_lora_into_action_head(
 # This is the PI adaptation of CL-LoRA for VLA models.
 
 
-def _freeze_and_reinit_modules(modules, freeze_specific_a: bool, reinit: bool) -> int:
-    """Apply freeze + optional reinit to a collection of CLLoRALinear modules."""
+def _freeze_and_reinit_modules(modules, freeze_specific_a: bool, reinit: bool,
+                               freeze_shared: bool = True) -> int:
+    """Apply freeze + optional reinit to a collection of CLLoRALinear modules.
+
+    freeze_shared=False 时**不冻结** shared 层 A/B（研究用: 制造"共享通路漂移"遗忘源）。
+    注意 shared 参数不进 bank（`save_task_bank` 只存 specific），所以解冻后**没有任何恢复路径**，
+    漂移会同时污染所有任务 —— 这是与 specific-A 漂移（只伤旧任务）本质不同的遗忘通道。
+    """
     frozen = 0
     for module in modules:
         if not isinstance(module, CLLoRALinear):
             continue
         if module.is_shared:
-            module.lora_a.requires_grad = False
-            module.lora_b.requires_grad = False
-            if module.block_scale is not None:
-                module.block_scale.requires_grad = False   # 修复: 共享层 block_scale 此前漏冻结, Stage2+ 持续漂移
-            frozen += 3
+            if freeze_shared:
+                module.lora_a.requires_grad = False
+                module.lora_b.requires_grad = False
+                if module.block_scale is not None:
+                    module.block_scale.requires_grad = False   # 修复: 共享层 block_scale 此前漏冻结, Stage2+ 持续漂移
+                frozen += 3
         elif freeze_specific_a:
             module.lora_a.requires_grad = False
             frozen += 1
@@ -255,29 +262,47 @@ def _freeze_and_reinit_modules(modules, freeze_specific_a: bool, reinit: bool) -
     return frozen
 
 
-def freeze_stage1_params(model, freeze_specific_a: bool = True, action_head=None) -> None:
+def shared_param_ids(model) -> set:
+    """返回 model 里 shared CLLoRALinear 的 lora_a/lora_b 参数 id 集合（供分层 lr 使用）。"""
+    ids = set()
+    for m in model.modules():
+        if isinstance(m, CLLoRALinear) and m.is_shared:
+            ids.add(id(m.lora_a))
+            ids.add(id(m.lora_b))
+    return ids
+
+
+def freeze_stage1_params(model, freeze_specific_a: bool = True, action_head=None,
+                         freeze_shared: bool = True) -> None:
     """V11-aligned: shared A+B both permanently frozen after Stage 1.
 
-    Shared LoRA-A + LoRA-B: permanently frozen (complete anti-forgetting).
+    Shared LoRA-A + LoRA-B: permanently frozen (complete anti-forgetting) —— 除非 freeze_shared=False（实验开关）。
     Specific LoRA-A: frozen if freeze_specific_a=True (orthogonal subspace protection).
     """
-    frozen = _freeze_and_reinit_modules(model.modules(), freeze_specific_a, reinit=False)
+    frozen = _freeze_and_reinit_modules(model.modules(), freeze_specific_a, reinit=False,
+                                        freeze_shared=freeze_shared)
     if action_head is not None:
-        frozen += _freeze_and_reinit_modules(action_head.modules(), freeze_specific_a, reinit=False)
+        frozen += _freeze_and_reinit_modules(action_head.modules(), freeze_specific_a, reinit=False,
+                                             freeze_shared=freeze_shared)
     extra = " + specific A" if freeze_specific_a else ""
-    print(f"[TaskBank] Stage 1 freeze: {frozen} params locked (shared A + shared B{extra})")
+    shared_note = "" if freeze_shared else " ⚠️ shared A/B 保持可训练(实验: 共享通路漂移源)"
+    print(f"[TaskBank] Stage 1 freeze: {frozen} params locked (shared A + shared B{extra}){shared_note}")
 
 
-def reinit_bank_for_new_task(model, action_head=None) -> None:
+def reinit_bank_for_new_task(model, action_head=None, freeze_shared: bool = True) -> None:
     """Before training Stage 2+: reset specific LoRA-B and block_scale to zero.
 
     Specific B starts fresh so the new task learns its own output mapping.
     Block_scale starts at identity (effective_scale = 1.0 + 0.5*tanh(0) = 1.0).
+    freeze_shared 需与 freeze_stage1_params 保持一致（否则会把刚解冻的 shared A/B 又冻回去）。
     """
-    _freeze_and_reinit_modules(model.modules(), freeze_specific_a=False, reinit=True)
+    _freeze_and_reinit_modules(model.modules(), freeze_specific_a=False, reinit=True,
+                               freeze_shared=freeze_shared)
     if action_head is not None:
-        _freeze_and_reinit_modules(action_head.modules(), freeze_specific_a=False, reinit=True)
-    print("[TaskBank] Reinitialized specific LoRA-B + block_scale for new task")
+        _freeze_and_reinit_modules(action_head.modules(), freeze_specific_a=False, reinit=True,
+                                   freeze_shared=freeze_shared)
+    print("[TaskBank] Reinitialized specific LoRA-B + block_scale for new task"
+          + ("" if freeze_shared else " (shared A/B 保持可训练)"))
 
 
 def _is_film_key(key: str) -> bool:
