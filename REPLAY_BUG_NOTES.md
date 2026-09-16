@@ -321,6 +321,36 @@ python vla-scripts/analyze_cl_lora_drift.py \
 · 预期：A 从 0 抬起的可能性显著高于普通回放（这次是"直接优化目标函数"）；
 · 成本：代码改动 + 3 段训练。**待评估，未实现。**
 
+### 10.6 解冻 shared A/B：连续可调的遗忘通道（2026-08 实现）
+
+**现状核对**：stage 2+ 时 **shared A 与 shared B 都是冻结的，且是无条件冻结**（`freeze_stage1_params` → `_freeze_and_reinit_modules`：`module.is_shared` 分支直接 `requires_grad=False`；`freeze_specific_a` 只管 specific 层）。shared 层没有 block_scale（该门控只存在于 specific 层）。stage 1 内 fallback 逻辑会把 `lora_a/lora_b/block_scale` 全部解冻可训，stage 1 结束时再统一冻 shared。
+
+**新增开关**（`12adedd`）：`--freeze_shared False` + `--shared_lr_scale <float>`（独立优化器参数组，与 `film_lr_scale` 同机制）。注意 `reinit_bank_for_new_task` 也已串上 `freeze_shared`，否则刚解冻会被它冻回去。
+
+**机制（与 FiLM/specific-A 漂移的本质差异）**：
+1. **shared 层不进 bank**（`save_task_bank` 只存 specific 的 lora_b/block_scale + FiLM）⇒ 解冻 = **没有任何恢复路径**；
+2. shared 通路被**所有任务共用** ⇒ 漂移**同时**污染全部旧任务（不像 specific-A 漂移只伤旧任务、且是阈值型）；
+3. 损伤是**加性、平滑**的 ⇒ `shared_lr_scale` 给出**连续可调的遗忘曲线**（补上"0.2~0.5 中间残留不可得"缺的那条通道）；
+4. 副作用：新任务 D 可能**变好**（共享通路拿到更多容量）。
+
+**⚠️ 实验设计警告（必须遵守）**：解冻 shared = **拆掉 CL-LoRA 的核心保护**。它可以作为"**逐项消融保护机制**"表里的一行（− shared freeze），**不能**当作"CL-LoRA 无回放基线"来讲——评审会问"为什么把共享层解冻"。**已有的合法遗忘阶梯**（无需新训练）：
+
+| 臂 | 保护机制 | 结果 | 保留率均值(A/B/C) |
+|---|---|---|---|
+| 普通 LoRA | 无（顺序覆盖，无 bank） | 0-0-0-0.82 | 0 |
+| b4 | shared 冻结；specific-A **漂移** | 0-0.57-0-0.85 | 0.19 |
+| b3 | shared+A 冻结；**FiLM 漂移** 0.2× | 0.26-0.88-0.72-0.82 | 0.62 |
+| b5 | 全冻结 | A/B >0.9 | ~0.9 |
+
+**脚本**：`run_v39b7_shared_unfreeze.sh`
+```bash
+bash run_v39b7_shared_unfreeze.sh                        # 剂量 0.1（温和）→ rt_v39b7_s01_*
+SHARED_LR_SCALE=0.3 bash run_v39b7_shared_unfreeze.sh    # 中剂量 → rt_v39b7_s03_*
+SHARED_LR_SCALE=1.0 bash run_v39b7_shared_unfreeze.sh    # 全速（应接近普通 LoRA 的遗忘）
+USE_REPLAY=True bash run_v39b7_shared_unfreeze.sh        # 回放孪生臂（同剂量 + 原型回放）→ rt_v39r7_*
+```
+**最有价值的用法不是"造弱基线"，而是 `v39r7`**：测**回放能否替代 shared 冻结**（回放梯度会流进 shared A/B）——若能保住，就支持"回放 = 换取组件自由度"的叙事，这是一条对方法有利的正面结论。
+
 ### 10.5 两条臂各自"达到预期"的配置路线（2026-08 设计）
 
 #### 10.5.0 实测: b5（无回放, 全冻结）= A/B 均 >0.9 ⇒ 完整解释（2026-08, 关键转折）
