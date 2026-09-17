@@ -690,15 +690,9 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         freeze_stage1_params(vla, freeze_specific_a=cfg.freeze_specific_a,
                              freeze_shared=cfg.freeze_shared)
         reinit_bank_for_new_task(vla, freeze_shared=cfg.freeze_shared)
-        # "按层保护量"旋钮: 只让部分 specific 层的 A 保持可训练（其余层 A 冻回 A_1 ⇒ 该层贡献精确复原）
-        if not cfg.freeze_specific_a and cfg.specific_a_trainable_layers.strip():
-            keep = parse_layer_spec(cfg.specific_a_trainable_layers,
-                                    lo=cfg.first_lora_layer + cfg.shared_depth, hi=31)
-            n_frozen, n_train = apply_specific_a_layer_mask(
-                vla, action_head, trainable_layers=keep,
-                freeze_action_head_a=cfg.specific_a_freeze_action_head)
-            print(f"[LayerMask] specific-A 分级保护: 解冻 {n_train} 个模块 / 冻结 {n_frozen} 个"
-                  f"（解冻层={sorted(keep) if keep else '全部'} | 动作头A{'冻结' if cfg.specific_a_freeze_action_head else '解冻'}）")
+        # 注意: "按层保护量"掩码不能在这里应用 —— action_head 此时尚未创建,
+        # 且动作头稍后还会做自己的 freeze/reinit 会覆盖设置。真正的应用点见下面
+        # "Action head" 段落中 stage>1 冻结之后。
         lora_trainable = sum(p.numel() for p in vla.parameters() if p.requires_grad)
         print(f"[TaskBank] Stage {cfg.stage} trainable after freeze+reinit: {lora_trainable:,}")
 
@@ -783,8 +777,20 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
             count_parameters(action_head, "action_head (CL-LoRA)")
         # For Stage 2+: freeze specific A in action_head and reinit B
         if cfg.use_cl_lora and cfg.stage > 1:
-            freeze_stage1_params(action_head, freeze_specific_a=cfg.freeze_specific_a)
-            reinit_bank_for_new_task(action_head)
+            freeze_stage1_params(action_head, freeze_specific_a=cfg.freeze_specific_a,
+                                 freeze_shared=cfg.freeze_shared)
+            reinit_bank_for_new_task(action_head, freeze_shared=cfg.freeze_shared)
+            # ---- "按层保护量"旋钮：必须在这里应用（vla 与 action_head 均已就绪，
+            #      且动作头自己的 freeze/reinit 已执行完，不会再被覆盖）----
+            if not cfg.freeze_specific_a and cfg.specific_a_trainable_layers.strip():
+                keep = parse_layer_spec(cfg.specific_a_trainable_layers,
+                                        lo=cfg.first_lora_layer + cfg.shared_depth, hi=31)
+                n_frozen, n_train = apply_specific_a_layer_mask(
+                    vla, action_head, trainable_layers=keep,
+                    freeze_action_head_a=cfg.specific_a_freeze_action_head)
+                print(f"[LayerMask] specific-A 分级保护: 解冻 {n_train} 个模块 / 冻结 {n_frozen} 个"
+                      f"（解冻层={sorted(keep) if keep else '全部'} | "
+                      f"动作头A{'冻结' if cfg.specific_a_freeze_action_head else '解冻'}）")
         if _pending_action_head_state is not None:
             action_head.load_state_dict(_pending_action_head_state, strict=False)
         action_head = wrap_ddp(action_head, device_id)
