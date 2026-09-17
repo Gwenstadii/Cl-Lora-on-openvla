@@ -45,7 +45,8 @@ from experiments.robot.openvla_utils import (
 from cl_lora import (CLLoRALinear, inject_cl_lora_into_model,
                       inject_cl_lora_into_action_head,
                       freeze_stage1_params, reinit_bank_for_new_task,
-                      save_task_bank, load_task_bank, shared_param_ids, specific_a_param_ids)
+                      save_task_bank, load_task_bank, shared_param_ids, specific_a_param_ids,
+                      apply_specific_a_layer_mask, parse_layer_spec)
 from replay_dataset import PrototypeReplayDataset
 
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
@@ -146,6 +147,8 @@ class TrainCLConfig:
     shared_lr_scale: float = 1.0               # 解冻后 shared A/B 的 lr 缩放（<1 = 温和漂移, 用于得到连续可调的残留曲线）
     specific_a_lr_scale: float = 1.0           # freeze_specific_a=False 时 A 的 lr 缩放（<1 = "部分解冻", 探 A 漂移阈值）
     bank_save_specific_a: bool = False         # True = bank 额外存 specific-A 快照（评估时 A_K+B_K 同时恢复 ⇒ 配对精确复原）
+    specific_a_trainable_layers: str = ""      # "按层保护量"旋钮: 允许保持可训练的 specific-A 层号(如 "28-31"); 空=全部可训练(原行为)
+    specific_a_freeze_action_head: bool = True  # 动作头 4 个注入层无层号 ⇒ 单独开关(默认冻结, 只看 LLM 层)
     bank_film_mode: str = "film"               # task bank 存多少 FiLM: none(不存) | film(只存 scale/shift ~0.2MB) | full(整份 vision_backbone ~2.4GB, 旧行为)
     first_lora_layer: int = 0                  # PI action-expert: only inject LoRA from this layer onward
     clip_weight: float = 1.0
@@ -687,6 +690,15 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
         freeze_stage1_params(vla, freeze_specific_a=cfg.freeze_specific_a,
                              freeze_shared=cfg.freeze_shared)
         reinit_bank_for_new_task(vla, freeze_shared=cfg.freeze_shared)
+        # "按层保护量"旋钮: 只让部分 specific 层的 A 保持可训练（其余层 A 冻回 A_1 ⇒ 该层贡献精确复原）
+        if not cfg.freeze_specific_a and cfg.specific_a_trainable_layers.strip():
+            keep = parse_layer_spec(cfg.specific_a_trainable_layers,
+                                    lo=cfg.first_lora_layer + cfg.shared_depth, hi=31)
+            n_frozen, n_train = apply_specific_a_layer_mask(
+                vla, action_head, trainable_layers=keep,
+                freeze_action_head_a=cfg.specific_a_freeze_action_head)
+            print(f"[LayerMask] specific-A 分级保护: 解冻 {n_train} 个模块 / 冻结 {n_frozen} 个"
+                  f"（解冻层={sorted(keep) if keep else '全部'} | 动作头A{'冻结' if cfg.specific_a_freeze_action_head else '解冻'}）")
         lora_trainable = sum(p.numel() for p in vla.parameters() if p.requires_grad)
         print(f"[TaskBank] Stage {cfg.stage} trainable after freeze+reinit: {lora_trainable:,}")
 

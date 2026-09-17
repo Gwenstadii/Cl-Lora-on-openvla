@@ -15,6 +15,7 @@ Reference: PI0.5 CL-LoRA (openpi/models/lora.py, openpi/models/gemma.py)
 """
 
 import math
+import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -318,6 +319,64 @@ def _bank_size_mb(bank: dict) -> float:
         elif isinstance(v, dict):
             total += sum(t.numel() * t.element_size() for t in v.values() if torch.is_tensor(t))
     return total / 1e6
+
+
+def apply_specific_a_layer_mask(model, action_head=None, trainable_layers=None,
+                               freeze_action_head_a: bool = True):
+    """按层控制 specific-A 是否可训练 —— "保护量"旋钮（比 lr 缩放更可能给出连续曲线）。
+
+    机制（为什么这个旋钮是"分级"的，而 lr 缩放不是）:
+      评估任务 K 时 = W + Σ_{frozen 层} s·g_K·B_K·A_1  +  Σ_{unfrozen 层} s·g_K·B_K·A_final
+      ⇒ frozen 层的贡献**精确复原**，unfrozen 层**局部损坏** ⇒ 损伤按"坏掉几层"分级；
+      而 lr 缩放会让**所有层同时轻微漂移**，每层都配不上 ⇒ 一步跨过阈值（实测 A=0/56）。
+      自适应优化器下位移 ≈ lr·√N，40k 步后已到 A 自身尺度 ⇒ 任何非零 lr 都会漂穿。
+
+    trainable_layers: 允许保持可训练的 LLM 层号集合（如 {28,29,30,31}）；None = 全部可训练（=原行为）。
+    freeze_action_head_a: 动作头 4 个注入 Linear 没有层号，单独开关（默认冻结，保证"只动 LLM 层"）。
+    返回 (frozen_count, trainable_count)。
+    """
+    frozen = trainable = 0
+    for name, module in model.named_modules():
+        if not isinstance(module, CLLoRALinear) or module.is_shared:
+            continue
+        m = re.search(r"layers\.(\d+)\.", name)
+        if m is None:
+            continue
+        idx = int(m.group(1))
+        keep = trainable_layers is None or idx in trainable_layers
+        module.lora_a.requires_grad = keep
+        if keep:
+            trainable += 1
+        else:
+            frozen += 1
+    if action_head is not None:
+        for _name, module in action_head.named_modules():
+            if isinstance(module, CLLoRALinear):
+                module.lora_a.requires_grad = not freeze_action_head_a
+                if freeze_action_head_a:
+                    frozen += 1
+                else:
+                    trainable += 1
+    return frozen, trainable
+
+
+def parse_layer_spec(spec: str, lo: int = 24, hi: int = 31):
+    """解析层号字符串: "28-31" / "24,25,26" / "" → set(层号) 或 None（None=全部可训练）。
+    支持组合: "24-27,30"。空串返回 None。"""
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    out = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            out.update(range(int(a), int(b) + 1))
+        else:
+            out.add(int(part))
+    return {i for i in out if lo <= i <= hi} or None
 
 
 def specific_a_param_ids(model, action_head=None) -> set:
