@@ -145,11 +145,38 @@ echo "==== B 自评 (20ep) —— 门禁 ≥ $PASS_THRESHOLD（对照 b5 的 B>0
 bash "$EVAL_ONE" grab_roller demo_clean "$CKPT_B" 0 "$EVAL_GPUS" \
     aloha_grab_roller_clean 2 20 "${PREFIX}_B_self" 0 \
     2>&1 | tee "/tmp/${PREFIX}_B.log" | grep -v "svulkan2.*error"
-B_RATE=$(grep "Merged success rate" "/tmp/${PREFIX}_B.log" | tail -1 | grep -oE "[0-9]+\.[0-9]+" || true)
-echo "B 自评: ${B_RATE:-异常}"
-if ! python -c "import sys; sys.exit(0 if float('${B_RATE:-0}') >= $PASS_THRESHOLD else 1)"; then
+
+# 稳健解析: 合并行缺失（某 worker 崩了会让合并被跳过）时，回退到各 worker 成功率均值
+parse_rate() {  # $1=log → 打印 0-1 的成功率，或空
+    local merged
+    merged=$(grep "Merged success rate" "$1" 2>/dev/null | tail -1 | grep -oE "[0-9]+\.[0-9]+" || true)
+    if [ -n "$merged" ]; then echo "$merged"; return; fi
+    python - "$1" <<'PY'
+import re, sys
+vals = []
+try:
+    for ln in open(sys.argv[1], errors="ignore"):
+        m = re.search(r"Success rate:\s*(\d+)/(\d+)\s*=>\s*([\d.]+)%", ln)
+        if m:
+            vals.append(float(m.group(3)) / 100.0)
+except FileNotFoundError:
+    pass
+print(f"{sum(vals)/len(vals):.4f}" if vals else "")
+PY
+}
+
+B_RATE=$(parse_rate "/tmp/${PREFIX}_B.log")
+if [ -z "$B_RATE" ]; then
+    echo "[FAIL] B 自评日志里既无合并行也无 worker 成功率 → 看 /tmp/${PREFIX}_B.log 的报错"
+    echo "       想跳过门禁直接评估: SKIP_B_GATE=1 重跑（训练会 SKIP, 直接进探针评估）"
+    [ "$FORCE" != "1" ] && exit 2
+fi
+echo "B 自评: ${B_RATE:-异常}$(grep -q '有 worker 失败' "/tmp/${PREFIX}_B.log" 2>/dev/null && echo ' （有 worker 崩溃, 合并行缺失 → 用各 worker 均值）')"
+if [ "${SKIP_B_GATE:-0}" = "1" ]; then
+    echo "[SKIP_B_GATE=1] 跳过 B 门禁，继续"
+elif ! python -c "import sys; sys.exit(0 if float('${B_RATE:-0}') >= $PASS_THRESHOLD else 1)"; then
     echo "[WARN] B 自评 < $PASS_THRESHOLD"
-    [ "$FORCE" != "1" ] && { echo "[STOP] 停在 Stage 2 之后（继续: FORCE=1 重跑, 已完成会 SKIP）"; exit 2; }
+    [ "$FORCE" != "1" ] && { echo "[STOP] 停在 Stage 2 之后（继续: FORCE=1 或 SKIP_B_GATE=1 重跑, 已完成会 SKIP）"; exit 2; }
     echo "[FORCE=1] 继续"
 fi
 
@@ -173,6 +200,13 @@ if [ "$STOP_AFTER_STAGE" -lt 4 ] 2>/dev/null; then
     echo "     解冻层 = $TRAIN_LAYERS（$N_TRAIN 层）；对照: b5(0层解冻) A>0.9 | lr×0.2 全解冻 A=0/56"
     FILM_GAMMA="$FILM_GAMMA_EVAL" bash "$EVAL_SEQ" "$CKPT_B" "$EVAL_GPUS" 50 "${PREFIX}BonB" A B \
         2>&1 | grep -v "svulkan2.*error"
+    echo ""
+    echo "---- ${PREFIX} 探针结果（合并行缺失时自动用各 worker 均值兜底）----"
+    for t in A B; do
+        lf="/mnt/data/pengshengdi/RoboTwin-main/eval_result/${PREFIX}BonB_task${t}.log"
+        r=$(parse_rate "$lf")
+        printf "  Task %s: %s\n" "$t" "${r:-无数据（看 $lf）}"
+    done
     exit 0
 fi
 
