@@ -149,6 +149,7 @@ class TrainCLConfig:
     bank_save_specific_a: bool = False         # True = bank 额外存 specific-A 快照（评估时 A_K+B_K 同时恢复 ⇒ 配对精确复原）
     specific_a_trainable_layers: str = ""      # "按层保护量"旋钮: 允许保持可训练的 specific-A 层号(如 "28-31"); 空=全部可训练(原行为)
     specific_a_freeze_action_head: bool = True  # 动作头 4 个注入层无层号 ⇒ 单独开关(默认冻结, 只看 LLM 层)
+    specific_a_action_head_keep: str = ""       # 动作头 A 的精细控制: ""=按上一个开关 | "all" | "none" | 子串(如 "fc2")
     bank_film_mode: str = "film"               # task bank 存多少 FiLM: none(不存) | film(只存 scale/shift ~0.2MB) | full(整份 vision_backbone ~2.4GB, 旧行为)
     first_lora_layer: int = 0                  # PI action-expert: only inject LoRA from this layer onward
     clip_weight: float = 1.0
@@ -787,7 +788,8 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                                         lo=cfg.first_lora_layer + cfg.shared_depth, hi=31)
                 n_frozen, n_train = apply_specific_a_layer_mask(
                     vla, action_head, trainable_layers=keep,
-                    freeze_action_head_a=cfg.specific_a_freeze_action_head)
+                    freeze_action_head_a=cfg.specific_a_freeze_action_head,
+                    action_head_keep=cfg.specific_a_action_head_keep)
                 print(f"[LayerMask] specific-A 分级保护: 解冻 {n_train} 个模块 / 冻结 {n_frozen} 个"
                       f"（解冻层={sorted(keep) if keep else '全部'} | "
                       f"动作头A{'冻结' if cfg.specific_a_freeze_action_head else '解冻'}）")

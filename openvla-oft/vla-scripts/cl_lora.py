@@ -322,7 +322,8 @@ def _bank_size_mb(bank: dict) -> float:
 
 
 def apply_specific_a_layer_mask(model, action_head=None, trainable_layers=None,
-                               freeze_action_head_a: bool = True):
+                               freeze_action_head_a: bool = True,
+                               action_head_keep: str = ""):
     """按层控制 specific-A 是否可训练 —— "保护量"旋钮（比 lr 缩放更可能给出连续曲线）。
 
     机制（为什么这个旋钮是"分级"的，而 lr 缩放不是）:
@@ -331,8 +332,11 @@ def apply_specific_a_layer_mask(model, action_head=None, trainable_layers=None,
       而 lr 缩放会让**所有层同时轻微漂移**，每层都配不上 ⇒ 一步跨过阈值（实测 A=0/56）。
       自适应优化器下位移 ≈ lr·√N，40k 步后已到 A 自身尺度 ⇒ 任何非零 lr 都会漂穿。
 
-    trainable_layers: 允许保持可训练的 LLM 层号集合（如 {28,29,30,31}）；None = 全部可训练（=原行为）。
-    freeze_action_head_a: 动作头 4 个注入 Linear 没有层号，单独开关（默认冻结，保证"只动 LLM 层"）。
+    trainable_layers: 允许保持可训练的 LLM 层号集合（如 {28,29,30,31}）；None = 全部可训练；set() = 全部冻结。
+    freeze_action_head_a / action_head_keep:
+      动作头 4 个注入 Linear 没有层号，单独控制。
+      action_head_keep: ""=按 freeze_action_head_a；"all"=全解冻；"none"=全冻结；
+                        或子串列表（如 "fc2" / "fc1,mlp_resnet_blocks"）匹配模块名。
     返回 (frozen_count, trainable_count)。
     """
     frozen = trainable = 0
@@ -350,22 +354,35 @@ def apply_specific_a_layer_mask(model, action_head=None, trainable_layers=None,
         else:
             frozen += 1
     if action_head is not None:
-        for _name, module in action_head.named_modules():
-            if isinstance(module, CLLoRALinear):
-                module.lora_a.requires_grad = not freeze_action_head_a
-                if freeze_action_head_a:
-                    frozen += 1
-                else:
-                    trainable += 1
+        keep_spec = (action_head_keep or "").strip().lower()
+        subs = [s.strip() for s in keep_spec.split(",") if s.strip()] if keep_spec else []
+        for name, module in action_head.named_modules():
+            if not isinstance(module, CLLoRALinear):
+                continue
+            if keep_spec == "all":
+                keep = True
+            elif keep_spec in ("none", ""):
+                keep = not freeze_action_head_a
+            else:
+                keep = any(s in name for s in subs)
+            module.lora_a.requires_grad = keep
+            if keep:
+                trainable += 1
+            else:
+                frozen += 1
     return frozen, trainable
 
 
 def parse_layer_spec(spec: str, lo: int = 24, hi: int = 31):
-    """解析层号字符串: "28-31" / "24,25,26" / "" → set(层号) 或 None（None=全部可训练）。
-    支持组合: "24-27,30"。空串返回 None。"""
+    """解析层号字符串: "28-31" / "24,25,26" / "none" / "" → set(层号)。
+    · ""     → None（= 全部可训练，原行为）
+    · "none" → set()（= 全部冻结；用于"只让动作头 A 漂移"这类对照）
+    支持组合: "24-27,30"。"""
     spec = (spec or "").strip()
     if not spec:
         return None
+    if spec.lower() in ("none", "no", "-", "0"):
+        return set()
     out = set()
     for part in spec.split(","):
         part = part.strip()
@@ -376,7 +393,7 @@ def parse_layer_spec(spec: str, lo: int = 24, hi: int = 31):
             out.update(range(int(a), int(b) + 1))
         else:
             out.add(int(part))
-    return {i for i in out if lo <= i <= hi} or None
+    return {i for i in out if lo <= i <= hi}
 
 
 def specific_a_param_ids(model, action_head=None) -> set:

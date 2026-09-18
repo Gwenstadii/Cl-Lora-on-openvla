@@ -37,14 +37,17 @@ EVAL_ONE="/mnt/data/pengshengdi/RoboTwin-main/policy/openvla-oft/eval_multi_gpu.
 CKPT_A="$LOGS_ROOT/rt_v39_taskA--30000_chkpt"
 BUF_P="$LOGS_ROOT/replay_buffers"
 
-TRAIN_LAYERS="${TRAIN_LAYERS:-28-31}"          # 保持可训练的 specific-A 层（24-31 内）
+TRAIN_LAYERS="${TRAIN_LAYERS:-28-31}"          # 保持可训练的 specific-A 层（24-31 内）；"none"=全部冻结 LLM 侧 A
 FREEZE_AH_A="${FREEZE_AH_A:-True}"             # 动作头 A 是否冻结（默认冻结 ⇒ 只动 LLM 层，单变量更干净）
+AH_KEEP="${AH_KEEP:-}"                         # 动作头 A 精细控制: ""=按 FREEZE_AH_A | "all" | "none" | 子串(如 "fc2")
 USE_REPLAY="${USE_REPLAY:-False}"
 USE_KD="${USE_KD:-False}"
 FREEZE_FILM_STAGE2="${FREEZE_FILM_STAGE2:-True}"   # 与 b5/b4 一致
 STOP_AFTER_STAGE="${STOP_AFTER_STAGE:-4}"
 
-N_TRAIN=$(python - <<PY
+case "$TRAIN_LAYERS" in
+  none|no|-|0) N_TRAIN=0 ;;
+  *) N_TRAIN=$(python - <<PY
 s="$TRAIN_LAYERS"; n=0
 for p in s.split(','):
     p=p.strip()
@@ -54,8 +57,13 @@ for p in s.split(','):
     else: n+=1
 print(n)
 PY
-)
-PREFIX="v39b9_n${N_TRAIN}"
+) ;;
+esac
+if [ "$N_TRAIN" = "0" ] && [ "$FREEZE_AH_A" != "True" ]; then
+    PREFIX="v39b9_ahonly"          # 只让动作头 A 漂移（决定性对照）
+else
+    PREFIX="v39b9_n${N_TRAIN}"
+fi
 [ "$USE_REPLAY" = "True" ] && PREFIX="${PREFIX}_r"
 
 GPUS="${GPUS:-4,5,6,7}"
@@ -115,6 +123,7 @@ run_stage() {  # $1=stage $2=dataset $3=run_id $4=prev_dir $5=prev_step $6..=buf
         --orthogonal_init True --freeze_a True --use_block_scale True --freeze_specific_a False \
         --specific_a_trainable_layers "$TRAIN_LAYERS" \
         --specific_a_freeze_action_head "$FREEZE_AH_A" \
+        --specific_a_action_head_keep "$AH_KEEP" \
         --bank_film_mode film \
         --use_kd "$USE_KD" --freeze_film_stage2 "$FREEZE_FILM_STAGE2" --lambda_kd 0.2 \
         "${replay_args[@]}" \
