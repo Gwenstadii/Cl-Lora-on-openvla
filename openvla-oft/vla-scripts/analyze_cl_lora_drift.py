@@ -22,19 +22,40 @@ analyze_cl_lora_drift.py — 量化 CL-LoRA 各阶段之间 lora_a / lora_b 的�
 """
 
 import argparse
+import glob
 import os
 import re
 from collections import defaultdict
 
 import torch
 
+_WITH_ACTION_HEAD = False   # 由 --with-action-head 打开
+
 
 def load_adapter(ckpt_dir: str) -> dict:
+    """载入该 ckpt 的 CL-LoRA 参数：
+      · LLM 侧: cl_lora_adapter.pt
+      · 动作头侧: action_head--<step>_checkpoint.pt（key 加 "action_head." 前缀，需 --with-action-head）
+    动作头侧必须单独读 —— 它不在 cl_lora_adapter.pt 里（那份只含 vla.module 的 key）。
+    """
+    out = {}
     p = os.path.join(ckpt_dir, "cl_lora_adapter.pt")
     if not os.path.isfile(p):
         raise FileNotFoundError(f"找不到 {p}（确认这是 CL-LoRA 的 ckpt 目录）")
     sd = torch.load(p, map_location="cpu", weights_only=False)
-    return {k: v.float() for k, v in sd.items() if v.dtype.is_floating_point}
+    out.update({k: v.float() for k, v in sd.items() if v.dtype.is_floating_point})
+
+    if _WITH_ACTION_HEAD:
+        cands = sorted(glob.glob(os.path.join(ckpt_dir, "action_head--*_checkpoint.pt")))
+        if cands:
+            def step_of(x):
+                m = re.search(r"--(\d+)_checkpoint", x)
+                return int(m.group(1)) if m else -1
+            ah = torch.load(max(cands, key=step_of), map_location="cpu", weights_only=True)
+            for k, v in ah.items():
+                if any(t in k for t in ("lora_a", "lora_b", "block_scale")) and v.dtype.is_floating_point:
+                    out[f"action_head.{k}"] = v.float()
+    return out
 
 
 def layer_of(key: str):
@@ -135,7 +156,12 @@ def main():
     ap.add_argument("--names", nargs="*", default=None, help="对应的阶段名（如 A B C D）")
     ap.add_argument("--pair-only", action="store_true",
                     help="只比较相邻两两，不与第一个 ckpt 累计比较")
+    ap.add_argument("--with-action-head", action="store_true",
+                    help="同时读动作头 action_head--*.pt 的 lora_a/lora_b/block_scale（动作头 A 是当前重点嫌疑）")
     args = ap.parse_args()
+
+    global _WITH_ACTION_HEAD
+    _WITH_ACTION_HEAD = args.with_action_head
 
     names = args.names if args.names and len(args.names) == len(args.ckpts) \
         else [os.path.basename(c.rstrip("/\\")) for c in args.ckpts]
