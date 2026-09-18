@@ -790,9 +790,12 @@ def train_cl_lora(cfg: TrainCLConfig) -> None:
                     vla, action_head, trainable_layers=keep,
                     freeze_action_head_a=cfg.specific_a_freeze_action_head,
                     action_head_keep=cfg.specific_a_action_head_keep)
+                llm_desc = ("全部" if keep is None else
+                            ("无(全冻)" if len(keep) == 0 else str(sorted(keep))))
+                ah_desc = (cfg.specific_a_action_head_keep.strip() or
+                           ("冻结" if cfg.specific_a_freeze_action_head else "解冻"))
                 print(f"[LayerMask] specific-A 分级保护: 解冻 {n_train} 个模块 / 冻结 {n_frozen} 个"
-                      f"（解冻层={sorted(keep) if keep else '全部'} | "
-                      f"动作头A{'冻结' if cfg.specific_a_freeze_action_head else '解冻'}）")
+                      f"（LLM 解冻层={llm_desc} | 动作头A={ah_desc}）")
         if _pending_action_head_state is not None:
             action_head.load_state_dict(_pending_action_head_state, strict=False)
         action_head = wrap_ddp(action_head, device_id)

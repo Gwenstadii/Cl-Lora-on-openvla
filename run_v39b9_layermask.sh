@@ -64,6 +64,7 @@ if [ "$N_TRAIN" = "0" ] && [ "$FREEZE_AH_A" != "True" ]; then
 else
     PREFIX="v39b9_n${N_TRAIN}"
 fi
+PREFIX="${TAG:-$PREFIX}"           # TAG=v40 等自定义名（覆盖自动命名）
 [ "$USE_REPLAY" = "True" ] && PREFIX="${PREFIX}_r"
 
 GPUS="${GPUS:-4,5,6,7}"
