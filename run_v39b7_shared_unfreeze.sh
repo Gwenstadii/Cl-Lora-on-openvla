@@ -151,6 +151,19 @@ if ! python -c "import sys; sys.exit(0 if float('${B_RATE:-0}') >= $PASS_THRESHO
     echo "[FORCE=1] 继续"
 fi
 
+if [ "${STOP_AFTER_STAGE:-4}" -lt 3 ] 2>/dev/null; then
+    # 探针: 只训 B（1 段共享漂移）后在 B ckpt 上评估 A + B —— 先定剂量再做全链
+    echo ""
+    echo "==== [探针] STOP_AFTER_STAGE=2: 在 B ckpt 上评估 A + B（A 用 bank 恢复 B_A）===="
+    echo "     shared 漂移剂量 = lr×$SHARED_LR_SCALE（仅 1 段）| 回放=$USE_REPLAY"
+    FILM_GAMMA="$FILM_GAMMA_EVAL" bash "$EVAL_SEQ" "$CKPT_B" "$EVAL_GPUS" 50 "${PREFIX}BonB" A B \
+        2>&1 | grep -v "svulkan2.*error"
+    echo ""
+    echo "---- ${PREFIX} 探针结果 ----"
+    echo "参照: b5（shared 全冻, 无回放）A>0.9 | b4（含动作头 A 全漂）0-0.57-0-0.85"
+    exit 0
+fi
+
 if [ "$USE_REPLAY" = "True" ]; then
     run_stage 3 aloha_stack_bowls_two_clean "rt_${PREFIX}_taskC" "$CKPT_B" 40000 \
         "$BUF_P/taskA" "$BUF_P/taskB"
