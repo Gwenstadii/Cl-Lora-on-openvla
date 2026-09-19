@@ -43,6 +43,10 @@ class InferenceConfig:
     eval_task_id: int = 0
     film_gamma: float = 1.0   # 评估端 FiLM 恢复程度: 1=完全恢复任务FiLM, 0=不恢复(漂移行为), 0~1=插值
     film_scope: str = "all"   # FiLM 部分恢复范围: all/siglip/dinov2/k<N>(前N个block)
+    bank_restore_scope: str = os.environ.get("BANK_RESTORE_SCOPE", "all")
+    # ↑ 银行"部分恢复"（记忆量-保留率曲线, 纯评估, 不必重训）:
+    #   all | action_head | llm | layers:24-27 | mods:fc1,fc2 | drop:fc1
+    #   由环境变量 BANK_RESTORE_SCOPE 控制, 默认 all（不影响既有评估口径）
 
 
 def encode_obs(obs: dict) -> dict:
@@ -182,8 +186,10 @@ class Model:
         if is_cl and cfg.eval_task_id > 0:
             bp = os.path.join(cfg.pretrained_checkpoint, f"task_{cfg.eval_task_id}_bank.pt")
             if os.path.exists(bp):
-                self._lb(self.vla, self.action_head, bp, film_gamma=cfg.film_gamma, film_scope=cfg.film_scope)
-                print(f"[CL-LoRA] loaded task {cfg.eval_task_id} bank (film_gamma={cfg.film_gamma}, film_scope={cfg.film_scope})")
+                self._lb(self.vla, self.action_head, bp, film_gamma=cfg.film_gamma, film_scope=cfg.film_scope,
+                         restore_scope=getattr(cfg, "bank_restore_scope", "all"))
+                print(f"[CL-LoRA] loaded task {cfg.eval_task_id} bank (film_gamma={cfg.film_gamma}, "
+                      f"film_scope={cfg.film_scope}, restore_scope={getattr(cfg, 'bank_restore_scope', 'all')})")
 
     def get_action(self, observation: dict):
         obs = encode_obs(observation)

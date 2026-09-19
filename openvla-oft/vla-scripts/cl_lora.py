@@ -485,7 +485,54 @@ def _in_film_scope(key: str, scope: str) -> bool:
     return True
 
 
-def load_task_bank(model, action_head, bank_path: str, film_gamma: float = 1.0, film_scope: str = "all") -> None:
+def _restore_selected(key: str, scope: str) -> bool:
+    """评估端"bank 部分恢复"选择器 —— 画 记忆量-保留率 曲线（纯评估, 无需重训）。
+
+    scope:
+      "all"                       全部恢复（默认）
+      "action_head"               只恢复动作头（4 个模块的 B/block_scale[/A]）
+      "llm"                       只恢复 LLM 侧（丢掉动作头记忆）
+      "layers:24-27"              只恢复指定 LLM 层
+      "mods:fc1" / "mods:fc1,fc2" 只恢复 key 含这些子串的（动作头按模块名筛）
+      "drop:fc1"                  恢复除这些子串以外的
+    """
+    scope = (scope or "all").strip()
+    if scope in ("", "all"):
+        return True
+    is_ah = key.startswith("action_head.")
+    if scope == "action_head":
+        return is_ah
+    if scope == "llm":
+        return not is_ah
+    kind, _, arg = scope.partition(":")
+    if kind == "layers":
+        if is_ah:
+            return False
+        m = re.search(r"layers_(\d+)_", key)
+        if m is None:
+            return False
+        idx = int(m.group(1))
+        for part in arg.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                a, b = part.split("-", 1)
+                if int(a) <= idx <= int(b):
+                    return True
+            elif idx == int(part):
+                return True
+        return False
+    if kind in ("mods", "drop"):
+        subs = [s.strip() for s in arg.split(",") if s.strip()]
+        hit = any(s in key for s in subs)
+        return hit if kind == "mods" else (not hit)
+    print(f"[TaskBank] ⚠️ 未知 restore_scope='{scope}'，按 all 处理")
+    return True
+
+
+def load_task_bank(model, action_head, bank_path: str, film_gamma: float = 1.0,
+                   film_scope: str = "all", restore_scope: str = "all") -> None:
     """Load per-task bank: restore specific LoRA-B + block_scale + action_head (+ FiLM).
 
     film_gamma: FiLM 恢复程度 (评估端标定旋钮):
@@ -494,22 +541,25 @@ def load_task_bank(model, action_head, bank_path: str, film_gamma: float = 1.0, 
       0~1 之间 = 任务 FiLM 与当前 FiLM 线性插值 (残留量连续可调)
 
     film_scope: FiLM 部分恢复范围 (只恢复选中的层, 其余保持当前 checkpoint 的):
-      "all"    = 全部 FiLM (默认)
-      "siglip" = 只恢复 SigLIP 主干的 FiLM (featurizer.*)
-      "dinov2" = 只恢复 DINOv2 主干的 FiLM (fused_featurizer.*)
-      "k<N>"   = 只恢复每个主干前 N 个 block 的 FiLM (如 k10)
+      "all" / "siglip" / "dinov2" / "k<N>"
+
+    restore_scope: **银行记忆的部分恢复**（记忆量-保留率曲线用）:
+      "all" | "action_head" | "llm" | "layers:24-27" | "mods:fc1,fc2" | "drop:fc1"
+      ⇒ 未恢复的参数保持"当前 checkpoint 的值"（= 该任务记忆丢失）
     """
     bank = torch.load(bank_path, map_location='cpu', weights_only=True)
     loaded_a = 0
+    n_restored = 0
     for name, module in model.named_modules():
         if isinstance(module, CLLoRALinear) and not module.is_shared:
             layer_key = name.replace('.', '_')
             for suffix in ['lora_a', 'lora_b', 'block_scale']:
                 key = f"{layer_key}.{suffix}"
-                if key in bank:
+                if key in bank and _restore_selected(key, restore_scope):
                     target = getattr(module, suffix, None)
                     if target is not None:
                         target.data.copy_(bank[key].to(target.device))
+                        n_restored += 1
                         if suffix == 'lora_a':
                             loaded_a += 1
     if action_head is not None:
@@ -518,15 +568,19 @@ def load_task_bank(model, action_head, bank_path: str, film_gamma: float = 1.0, 
                 ah_key = name.replace('.', '_')
                 for suffix in ['lora_a', 'lora_b', 'block_scale']:
                     key = f"action_head.{ah_key}.{suffix}"
-                    if key in bank:
+                    if key in bank and _restore_selected(key, restore_scope):
                         target = getattr(module, suffix, None)
                         if target is not None:
                             target.data.copy_(bank[key].to(target.device))
+                            n_restored += 1
                             if suffix == 'lora_a':
                                 loaded_a += 1
         print(f"[TaskBank] Loaded action_head LoRA from bank")
     if loaded_a:
         print(f"[TaskBank] 恢复 specific-A 快照 {loaded_a} 个张量（bank 内含 A ⇒ 配对精确复原）")
+    if restore_scope not in ("", "all"):
+        print(f"[TaskBank] ⚠️ 部分恢复 restore_scope='{restore_scope}': 只恢复 {n_restored} 个张量"
+              f"（其余保持当前 checkpoint 值 = 该任务记忆缺失）")
 
     # FiLM 恢复 (bank 含 vision_backbone 时)
     if "vision_backbone" not in bank or getattr(model, "vision_backbone", None) is None:
