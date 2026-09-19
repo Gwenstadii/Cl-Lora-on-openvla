@@ -195,18 +195,28 @@ echo ""
 echo "==== $PREFIX 训练阶段完成 ===="
 
 if [ "$STOP_AFTER_STAGE" -lt 4 ] 2>/dev/null; then
+    # 探针: 在最后一个已训 stage 的 ckpt 上评估"到该阶段为止的全部任务"
+    if [ "$STOP_AFTER_STAGE" -ge 3 ] 2>/dev/null; then
+        PROBE_CKPT="$CKPT_C"; PROBE_TAG="${PREFIX}ConC"; PROBE_TASKS="A B C"
+    else
+        PROBE_CKPT="$CKPT_B"; PROBE_TAG="${PREFIX}BonB"; PROBE_TASKS="A B"
+    fi
+    PROBE_EPISODES="${PROBE_EPISODES:-50}"
     echo ""
-    echo "==== [探针] 在 B ckpt 上评估 A + B（A 用 bank 恢复 B_A）===="
-    echo "     解冻层 = $TRAIN_LAYERS（$N_TRAIN 层）；对照: b5(0层解冻) A>0.9 | lr×0.2 全解冻 A=0/56"
-    FILM_GAMMA="$FILM_GAMMA_EVAL" bash "$EVAL_SEQ" "$CKPT_B" "$EVAL_GPUS" 50 "${PREFIX}BonB" A B \
-        2>&1 | grep -v "svulkan2.*error"
+    echo "==== [探针] 在 $(basename "$PROBE_CKPT") 上评估 $PROBE_TASKS（A 用 bank 恢复 B_A）===="
+    echo "     解冻层 = $TRAIN_LAYERS（$N_TRAIN 层）；episodes=$PROBE_EPISODES"
+    FILM_GAMMA="$FILM_GAMMA_EVAL" bash "$EVAL_SEQ" "$PROBE_CKPT" "$EVAL_GPUS" "$PROBE_EPISODES" \
+        "$PROBE_TAG" $PROBE_TASKS 2>&1 | grep -v "svulkan2.*error"
     echo ""
-    echo "---- ${PREFIX} 探针结果（合并行缺失时自动用各 worker 均值兜底）----"
-    for t in A B; do
-        lf="/mnt/data/pengshengdi/RoboTwin-main/eval_result/${PREFIX}BonB_task${t}.log"
+    echo "---- ${PROBE_TAG} 探针结果（合并行缺失时自动用各 worker 均值兜底）----"
+    for t in $PROBE_TASKS; do
+        lf="/mnt/data/pengshengdi/RoboTwin-main/eval_result/${PROBE_TAG}_task${t}.log"
         r=$(parse_rate "$lf")
         printf "  Task %s: %s\n" "$t" "${r:-无数据（看 $lf）}"
     done
+    echo ""
+    echo "继续下一段（B/C 已训好的会自动 SKIP，只补 D 并做全任务评估）:"
+    echo "  STOP_AFTER_STAGE=4 TRAIN_LAYERS=\"$TRAIN_LAYERS\" AH_KEEP=\"$AH_KEEP\" TAG=$PREFIX bash run_v39b9_layermask.sh"
     exit 0
 fi
 
