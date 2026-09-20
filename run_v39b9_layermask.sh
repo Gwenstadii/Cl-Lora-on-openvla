@@ -44,6 +44,7 @@ USE_REPLAY="${USE_REPLAY:-False}"
 USE_KD="${USE_KD:-False}"
 FREEZE_FILM_STAGE2="${FREEZE_FILM_STAGE2:-True}"   # 与 b5/b4 一致
 FILM_LR_SCALE="${FILM_LR_SCALE:-1.0}"              # >0 且 freeze_film_stage2=False 时生效: FiLM 漂移力度（b3/b6 用 0.2 / 1.0）
+BANK_FILM_MODE="${BANK_FILM_MODE:-film}"           # bank 里存多少 FiLM: film(只 scale/shift ~0.2MB) | none(不存) | full(整份 VB ~2.4GB)
 STOP_AFTER_STAGE="${STOP_AFTER_STAGE:-4}"
 
 case "$TRAIN_LAYERS" in
@@ -126,7 +127,7 @@ run_stage() {  # $1=stage $2=dataset $3=run_id $4=prev_dir $5=prev_step $6..=buf
         --specific_a_trainable_layers "$TRAIN_LAYERS" \
         --specific_a_freeze_action_head "$FREEZE_AH_A" \
         --specific_a_action_head_keep "$AH_KEEP" \
-        --bank_film_mode film \
+        --bank_film_mode "$BANK_FILM_MODE" \
         --use_kd "$USE_KD" --freeze_film_stage2 "$FREEZE_FILM_STAGE2" --film_lr_scale "$FILM_LR_SCALE" --lambda_kd 0.2 \
         "${replay_args[@]}" \
         --image_aug True --use_proprio True --use_film True --num_images_in_input 3

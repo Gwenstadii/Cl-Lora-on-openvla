@@ -53,12 +53,24 @@ def bank_bytes(bank: dict) -> int:
     return total
 
 
-def slim_one(path: str, dry_run: bool, backup: bool) -> tuple:
+def slim_one(path: str, dry_run: bool, backup: bool, drop_film: bool = False) -> tuple:
     bank = torch.load(path, map_location="cpu", weights_only=True)
     before = bank_bytes(bank)
     vb = bank.get("vision_backbone")
     if not isinstance(vb, dict):
         return path, before, before, "skip(no vision_backbone)"
+    if drop_film:
+        # 整项删除：评估端 γ=0 时本来就不读它；删除后 γ 变 no-op（loader 会显式告警）
+        del bank["vision_backbone"]
+        after = bank_bytes(bank)
+        if dry_run:
+            return path, before, after, f"dry-run(drop film, 可省 {100 * (1 - after / before):.2f}%)"
+        if backup:
+            bak = path + ".full.bak"
+            if not os.path.exists(bak):
+                shutil.copy2(path, bak)
+        torch.save(bank, path)
+        return path, before, after, f"OK(drop film, 省 {100 * (1 - after / before):.2f}%)"
     film = {k: v for k, v in vb.items() if is_film(k)}
     if len(film) == len(vb):
         return path, before, before, f"skip(已是 FiLM-only, {len(vb)} tensors)"
@@ -85,6 +97,8 @@ def main():
                     help='bank 文件名匹配（默认 "task_*_bank.pt"；传父目录时可用 "rt_v39*_task*--40000_chkpt"）')
     ap.add_argument("--dry-run", action="store_true", help="只统计不写盘")
     ap.add_argument("--no-backup", action="store_true", help="不生成 .full.bak 备份")
+    ap.add_argument("--drop-film", action="store_true",
+                    help="整项删除 vision_backbone（不是压成 FiLM-only）——γ=0 口径下本来就不读它")
     args = ap.parse_args()
 
     paths = []
@@ -106,7 +120,7 @@ def main():
     print(f"共 {len(paths)} 个 bank 文件{'（dry-run）' if args.dry_run else ''}\n")
     tb = ta = 0
     for p in paths:
-        path, before, after, msg = slim_one(p, args.dry_run, not args.no_backup)
+        path, before, after, msg = slim_one(p, args.dry_run, not args.no_backup, args.drop_film)
         tb += before
         ta += after
         print(f"  {os.path.relpath(path)}: {mb(before)} → {mb(after)}  [{msg}]")
