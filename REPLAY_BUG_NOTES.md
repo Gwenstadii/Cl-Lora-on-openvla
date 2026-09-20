@@ -379,6 +379,37 @@ A_IN_BANK=True bash run_v39b8_speca_knob.sh
 A_IN_BANK=True USE_REPLAY=True bash run_v39b8_speca_knob.sh
 ```
 
+### 10.16 v41 首战（1 个 stage，B ckpt）：A=0.375 / B=0.94 —— **FiLM 漂移的"第一刀"被量化出来**
+
+**配置**：shared 冻结 ｜ LLM specific-A（L24-31）**放开** ｜ 动作头 A **冻结** ｜ **FiLM 漂 0.2×** ｜ 无回放 ｜ 只训到 B。
+
+**与 n6 的单变量差（同为 1 个 stage、同为 B ckpt、同为动作头 A 冻结）**：
+
+| 臂 | LLM-A | FiLM | Task A | Task B |
+|---|---|---|---|---|
+| v39b9_n6 | 6/8 层全速漂 | **冻结** | **0.9643** | 0.97 |
+| **v41** | 8/8 层全速漂 | **漂 0.2×** | **0.375** | **0.94** |
+
+⇒ **加一个 stage 的 FiLM 漂移（0.2×）就把 A 从 0.964 打到 0.375（−0.59）**，而 LLM-A 漂移本身几乎无害 ⇒ **FiLM 漂移是 A 上"回放够得到"的主损伤通道**（与 §10.15 的判据一致）。
+与 b3（FiLM 漂 0.2×、3 个 stage，A=0.26）对照 ⇒ FiLM 损伤**前载且饱和**：1 个 stage 已兑现大部分损失（0.375），再漂两轮只再降 ~0.11。
+
+**同时**：B=0.94（新任务无影响）；A=0.375 **已落在"无回放低基线"的目标区（≤0.4）**。
+⇒ **v41 的无回放臂天然满足"低基线"，且它保留的漂移源（FiLM）正是回放够得到的那个** ⇒ 这是构造"无回放低 ↔ 回放高"对比的正确载体。
+
+**续训与孪生臂**：
+```bash
+# ① 续训 C/D 并全任务评估（B 自动 SKIP）→ tag v41D
+STOP_AFTER_STAGE=4 TRAIN_LAYERS="24-31" FREEZE_AH_A=True \
+  FREEZE_FILM_STAGE2=False FILM_LR_SCALE=0.2 BANK_FILM_MODE=film TAG=v41 SKIP_B_GATE=1 \
+  bash run_v39b9_layermask.sh 2>&1 | tee train_v41_CD.log
+
+# ② 回放孪生臂（唯一差异=回放；需全链重训）→ tag v41_r
+STOP_AFTER_STAGE=4 TRAIN_LAYERS="24-31" FREEZE_AH_A=True \
+  FREEZE_FILM_STAGE2=False FILM_LR_SCALE=0.2 USE_REPLAY=True BANK_FILM_MODE=film TAG=v41 SKIP_B_GATE=1 \
+  bash run_v39b9_layermask.sh 2>&1 | tee train_v41r.log
+```
+**判读**：若 ② 的 A ≥0.6 而 ① 的 A ≤0.3 ⇒ 单变量不对称成立，主结果拿到；若 ② ≈ ① ⇒ 回放连 FiLM 也拉不住 ⇒ 只剩 bank-aware replay 一条路。
+
 ### 10.15 如何合法构造"无回放低 ↔ 回放高"的对比（对比度只能来自**回放够得到的通道**）
 
 **用户提出的关键顾虑**：路线 (a)（冻结/bank 关键 A）会让**两条臂一起涨**，回放臂达预期但无回放臂 retention 也变高 ⇒ 叙事崩。
