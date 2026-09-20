@@ -379,6 +379,47 @@ A_IN_BANK=True bash run_v39b8_speca_knob.sh
 A_IN_BANK=True USE_REPLAY=True bash run_v39b8_speca_knob.sh
 ```
 
+### 10.13 跨平台核对：LIBERO 与 RoboTwin 到底有没有矛盾？（结论：**没有矛盾，且 LIBERO 早已给出同样结论**）
+
+**LIBERO 记录（`方法论.md` §9.1–9.3）**：
+
+| LIBERO 臂 | specific-A | 回放 | Task A（各 stage） | Task B | Task C | Task D |
+|---|---|---|---|---|---|---|
+| **V38**（无回放） | **冻结** | 无 | 0.96 / 0.42 / 0.66 / **0.44** | 0.80 / 0.90 / 0.66 | 0.98 / 0.94 | 1.00 |
+| **V38 + replay** | **冻结** | ✅ | 0.96 / **0.96** / **0.96** | **0.94** | **0.88** | 1.00 |
+| **V39**（无回放，相对 V38 仅 `freeze_specific_a=False`） | **漂移** | 无 | 0.96 / — / **0.00** | **0.28** | 1.00 | — |
+| **V47**（`first_lora_layer=20` + `freeze_specific_a=False`） | **漂移** | ✅ | **仍 0.00** | — | — | 0.96 |
+| V48 | 冻结 | — | （据此改回冻结） | | | |
+
+**⇒ "LIBERO 达到预期"那一行是 V38 + replay（`A/B/C ≥0.88`），而它的 specific-A 是【冻结】的。**
+**LIBERO 自己试过"A 漂移 + replay"（V47）——A 依然 0.00，并直接写下了结论："freeze_specific_a 是 replay 能否救回 A 的关键"。**
+
+**RoboTwin 复现了同一形状**：
+
+| | A | B | C | D |
+|---|---|---|---|---|
+| LIBERO V39（A 漂移, 无回放） | **0.00** | 0.28 | 1.00 | — |
+| RoboTwin b4（A 漂移, 无回放） | **0** | 0.57 | 0 | 0.85 |
+| LIBERO V47（A 漂移, **有回放**） | **0.00** | — | — | 0.96 |
+| RoboTwin r3（A 漂移, **有回放**） | **0** | 0.90 | 0.20 | 0.88 |
+
+⇒ 两平台一致：**A 漂移 ⇒ 最老任务归零，回放救不回**；差异只在"次老任务"的残留（B：LIBERO 0.28 / RoboTwin 0.57–0.90，取决于容错与回放暴露量）。
+
+**真实存在的平台差异（都不是 RoboTwin 侧的新 bug）**：
+1. **LIBERO 评估端少恢复动作头**（`方法论.md:718` 记录的 caveat）：`run_libero_eval.py` 调 `_load_task_bank(model, None, bank_path)` ⇒ **动作头的 per-task B 从未恢复**；RoboTwin 的 `deploy_policy.py` 已修正（传 action_head）。⇒ 两边的"A 漂移"实验**评估协议不同**，LIBERO 从未在"动作头也按任务恢复"的条件下测过。
+2. **specific 层数**：LIBERO 4 层（L28-31，shared L24-27）vs RoboTwin 8 层（L24-31）⇒ 漂移面 2×。
+3. **每 stage 步数**：LIBERO 12000/16000（Stage2 续到 20000）vs RoboTwin 30000/40000 ⇒ Adam 位移 ∝ √N，约 1.5× 更大。
+4. **任务差异度**：LIBERO 的 A/B 同属 `libero_spatial`（同类任务，stage 3 时 A 甚至回升 0.42→0.66）；RoboTwin 四个任务跨域（交接麦克风/抓滚轮/叠碗/开笔记本）⇒ 任何身份错配都致命。
+5. **动作维度/动作头输入**：LIBERO 7D（动作头输入 4096×7）vs RoboTwin 14D（57376）⇒ 动作头 LoRA 的容量与脆弱面更大。
+
+**判定**：
+- **不是 RoboTwin 的代码 bug**：评估更严格（动作头按任务恢复）＋ 任务跨域 ＋ 漂移面更大，把 LIBERO 上**已经暴露过的设计假设失效**重新暴露了一次；
+- **也不是新发现的设计缺陷**：LIBERO 的 V47 已给出结论（必须冻 A），RoboTwin 的价值在于**把"该冻哪一部分"从"全部 specific-A"精确到"动作头的 `fc1`"**（v40_fc1：只冻/只放它一个模块即可决定成败）⇒ 由此得到 **v41（只冻动作头 A、放开 LLM 侧 L24-31）** 这个比 V38/V48 更宽松的配置。
+
+**可做的决定性交叉验证（若 LIBERO 环境还在）**：用修正后的评估（传 `action_head` 进 `_load_task_bank`）重评 LIBERO 的 V39/V47 ckpt：
+- 若 A 依旧 0（或更差）⇒ 证实"A 漂移 + 回放救不回 A"与评估端遗漏无关；
+- 若 A 明显变化 ⇒ 说明 LIBERO 早期数字受评估端遗漏影响，需在论文里注明两平台口径差异。
+
 ### 10.12 r3 完整行（0 / 0.90 / 0.20 / 0.88）与 b4 对照：**回放的收益为何只在 B 上体现**
 
 **数据（同一配置，唯一差异=原型回放；γ=0；r3 的 D=30ep 口径）**：
