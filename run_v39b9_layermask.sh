@@ -45,6 +45,8 @@ USE_KD="${USE_KD:-False}"
 FREEZE_FILM_STAGE2="${FREEZE_FILM_STAGE2:-True}"   # 与 b5/b4 一致
 FILM_LR_SCALE="${FILM_LR_SCALE:-1.0}"              # >0 且 freeze_film_stage2=False 时生效: FiLM 漂移力度（b3/b6 用 0.2 / 1.0）
 BANK_FILM_MODE="${BANK_FILM_MODE:-film}"           # bank 里存多少 FiLM: film(只 scale/shift ~0.2MB) | none(不存) | full(整份 VB ~2.4GB)
+FREEZE_SHARED="${FREEZE_SHARED:-True}"             # False = 解冻 shared A/B（无 bank 兜底的漂移源；高风险，见 §10.11/§10.17）
+SHARED_LR_SCALE="${SHARED_LR_SCALE:-1.0}"          # 解冻 shared 后的 lr 缩放（低剂量 0.02~0.1 才可能落在"有损伤但不致命"区间）
 STOP_AFTER_STAGE="${STOP_AFTER_STAGE:-4}"
 
 case "$TRAIN_LAYERS" in
@@ -89,7 +91,7 @@ if [ "$USE_REPLAY" = "True" ]; then
     done
 fi
 echo "[OK] tag = $PREFIX | specific-A 解冻层 = $TRAIN_LAYERS（共 $N_TRAIN 层，其余 L24-31 的 A 冻结）"
-echo "[OK] 动作头 A: $([ "$FREEZE_AH_A" = "True" ] && echo 冻结 || echo 解冻) | FiLM freeze=$FREEZE_FILM_STAGE2 (lr×$FILM_LR_SCALE)"
+echo "[OK] 动作头 A: $([ "$FREEZE_AH_A" = "True" ] && echo 冻结 || echo 解冻) | FiLM freeze=$FREEZE_FILM_STAGE2 (lr×$FILM_LR_SCALE) | shared freeze=$FREEZE_SHARED (lr×$SHARED_LR_SCALE)"
 echo "[OK] 回放=$USE_REPLAY | USE_KD=$USE_KD | STOP_AFTER_STAGE=$STOP_AFTER_STAGE"
 echo "[OK] GPUS=$GPUS | NPROC=$NPROC | batch=$BATCH_SIZE | accum=$GRAD_ACCUM (有效 batch=8)"
 echo "============ $PREFIX: Stage 2 -> $STOP_AFTER_STAGE ============"
@@ -128,6 +130,7 @@ run_stage() {  # $1=stage $2=dataset $3=run_id $4=prev_dir $5=prev_step $6..=buf
         --specific_a_freeze_action_head "$FREEZE_AH_A" \
         --specific_a_action_head_keep "$AH_KEEP" \
         --bank_film_mode "$BANK_FILM_MODE" \
+        --freeze_shared "$FREEZE_SHARED" --shared_lr_scale "$SHARED_LR_SCALE" \
         --use_kd "$USE_KD" --freeze_film_stage2 "$FREEZE_FILM_STAGE2" --film_lr_scale "$FILM_LR_SCALE" --lambda_kd 0.2 \
         "${replay_args[@]}" \
         --image_aug True --use_proprio True --use_film True --num_images_in_input 3
@@ -227,7 +230,7 @@ if [ "$STOP_AFTER_STAGE" -lt 4 ] 2>/dev/null; then
     done
     echo ""
     echo "继续下一段（B/C 已训好的会自动 SKIP，只补 D 并做全任务评估）:"
-    echo "  STOP_AFTER_STAGE=4 TRAIN_LAYERS=\"$TRAIN_LAYERS\" AH_KEEP=\"$AH_KEEP\" FREEZE_FILM_STAGE2=$FREEZE_FILM_STAGE2 FILM_LR_SCALE=$FILM_LR_SCALE TAG=$PREFIX bash run_v39b9_layermask.sh"
+    echo "  STOP_AFTER_STAGE=4 TRAIN_LAYERS=\"$TRAIN_LAYERS\" AH_KEEP=\"$AH_KEEP\" FREEZE_FILM_STAGE2=$FREEZE_FILM_STAGE2 FILM_LR_SCALE=$FILM_LR_SCALE FREEZE_SHARED=$FREEZE_SHARED SHARED_LR_SCALE=$SHARED_LR_SCALE TAG=$PREFIX bash run_v39b9_layermask.sh"
     echo ""
     echo "b3 对照（FiLM 漂 0.2×, A 全冻, 无回放, D ckpt）= 0.26-0.88-0.72-0.82"
     echo "b4 对照（specific-A 全漂含动作头, FiLM 冻, 无回放）= 0-0.57-0-0.85"
