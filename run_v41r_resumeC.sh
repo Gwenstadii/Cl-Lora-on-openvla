@@ -18,6 +18,10 @@
 #      pkill -f "run_id_override rt_v41_r_taskC"    # 仅在你确认原进程已死/要杀掉时执行
 #
 # 环境变量: GPUS(默认 4,5,6,7) BATCH_SIZE(默认 2) STEPS_REMAIN(默认 30000) NO_RENAME(1=不改名)
+#           EVAL_AFTER_TRAIN(默认 1=训完自动评估) EVAL_GPUS(默认 4,4,5,5,6,6,7,7)
+#           EVAL_EPISODES(默认 50) EVAL_TAG(默认 v41_rConC) EVAL_TASKS(默认 "A B C")
+#           FILM_GAMMA_EVAL(默认 0)
+# 训完会自动: 对齐命名为 --40000_chkpt → 在 C ckpt 上评估 A/B/C(γ=0) → 打印与无回放臂 v41ConC 的对照
 # =============================================================================
 
 set -u
@@ -102,3 +106,66 @@ echo "下一步（在 C ckpt 上评估 A/B/C，与无回放臂的 v41ConC 同口
 echo "  cd /mnt/data/pengshengdi/RoboTwin-main"
 echo "  FILM_GAMMA=0 bash policy/openvla-oft/eval_sequence.sh $TARGET_DIR 4,4,5,5,6,6,7,7 50 v41_rConC A B C"
 echo "  bash /mnt/data/pengshengdi/show_eval_rates.sh v41_rConC"
+
+# ---------- 训完自动评估 A/B/C ----------
+if [ "${EVAL_AFTER_TRAIN:-1}" != "1" ]; then
+    echo "[SKIP] EVAL_AFTER_TRAIN=0，跳过自动评估"
+    exit 0
+fi
+
+EVAL_CKPT="$TARGET_DIR"
+[ "$NO_RENAME" = "1" ] && EVAL_CKPT="$SRC"
+EVAL_GPUS="${EVAL_GPUS:-4,4,5,5,6,6,7,7}"
+EVAL_EPISODES="${EVAL_EPISODES:-50}"
+EVAL_TAG="${EVAL_TAG:-v41_rConC}"
+EVAL_TASKS="${EVAL_TASKS:-A B C}"
+EVAL_SEQ="/mnt/data/pengshengdi/RoboTwin-main/policy/openvla-oft/eval_sequence.sh"
+EVAL_OUT="/mnt/data/pengshengdi/RoboTwin-main/eval_result"
+FILM_GAMMA_EVAL="${FILM_GAMMA_EVAL:-0}"
+
+parse_rate() {  # $1=log → 0-1 成功率（合并行缺失时用各 worker 均值），或空
+    local merged
+    merged=$(grep "Merged success rate" "$1" 2>/dev/null | tail -1 | grep -oE "[0-9]+\.[0-9]+" || true)
+    if [ -n "$merged" ]; then echo "$merged"; return; fi
+    python - "$1" <<'PY'
+import re, sys
+vals = []
+try:
+    for ln in open(sys.argv[1], errors="ignore"):
+        m = re.search(r"Success rate:\s*(\d+)/(\d+)\s*=>\s*([\d.]+)%", ln)
+        if m:
+            vals.append(float(m.group(3)) / 100.0)
+except FileNotFoundError:
+    pass
+print(f"{sum(vals)/len(vals):.4f}" if vals else "")
+PY
+}
+
+echo ""
+echo "================ 自动评估 A/B/C（$EVAL_EPISODES ep, γ=$FILM_GAMMA_EVAL, tag=$EVAL_TAG）================"
+[ -x "$EVAL_SEQ" ] || [ -f "$EVAL_SEQ" ] || { echo "[WARN] 找不到 $EVAL_SEQ，跳过自动评估"; exit 0; }
+[ -d "$EVAL_CKPT" ] || { echo "[FAIL] 待评估 ckpt 不存在: $EVAL_CKPT"; exit 1; }
+FILM_GAMMA="$FILM_GAMMA_EVAL" bash "$EVAL_SEQ" \
+    "$EVAL_CKPT" "$EVAL_GPUS" "$EVAL_EPISODES" "$EVAL_TAG" $EVAL_TASKS 2>&1 | grep -v "svulkan2.*error"
+
+echo ""
+echo "================ $EVAL_TAG 结果（合并行缺失时用各 worker 均值兜底）================"
+for t in $EVAL_TASKS; do
+    lf="$EVAL_OUT/${EVAL_TAG}_task${t}.log"
+    r=$(parse_rate "$lf")
+    printf "  Task %s: %s\n" "$t" "${r:-无数据（看 $lf）}"
+done
+echo ""
+echo "---- 与无回放臂对照（同 C ckpt / 同 ${EVAL_EPISODES}ep / γ=$FILM_GAMMA_EVAL）----"
+for t in $EVAL_TASKS; do
+    r=$(parse_rate "$EVAL_OUT/v41ConC_task${t}.log")
+    printf "  v41(无回放) Task %s: %s\n" "$t" "${r:-未评（可跑: bash show_eval_rates.sh v41ConC）}"
+done
+echo ""
+echo "判读: A 明显高于 0（≥0.4）⇒ 回放拉住了 FiLM/LLM-A 通道, 继续补 D;"
+echo "      A 仍 ≈0 ⇒ 停止投入, 转 bank-aware replay。"
+echo ""
+echo "继续 D 段（两臂各一条，B/C 已训好的会自动 SKIP）:"
+echo "  STOP_AFTER_STAGE=4 SKIP_B_SELF=1 SKIP_B_GATE=1 TRAIN_LAYERS=24-31 FREEZE_AH_A=True \\"
+echo "    FREEZE_FILM_STAGE2=False FILM_LR_SCALE=0.2 BANK_FILM_MODE=film USE_REPLAY=True TAG=v41 \\"
+echo "    bash run_v39b9_layermask.sh 2>&1 | tee train_v41r_D.log"
