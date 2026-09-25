@@ -35,7 +35,7 @@ EVAL_SEQ="/mnt/data/pengshengdi/RoboTwin-main/policy/openvla-oft/eval_sequence.s
 EVAL_ONE="/mnt/data/pengshengdi/RoboTwin-main/policy/openvla-oft/eval_multi_gpu.sh"
 
 CKPT_A="$LOGS_ROOT/rt_v39_taskA--30000_chkpt"
-BUF_P="$LOGS_ROOT/replay_buffers"
+BUF_P="${BUF_ROOT:-$LOGS_ROOT/replay_buffers}"   # 回放 buffer 根目录: 原型=replay_buffers（默认）| 普通=replay_buffers_uniform
 
 TRAIN_LAYERS="${TRAIN_LAYERS:-28-31}"          # 保持可训练的 specific-A 层（24-31 内）；"none"=全部冻结 LLM 侧 A
 FREEZE_AH_A="${FREEZE_AH_A:-True}"             # 动作头 A 是否冻结（默认冻结 ⇒ 只动 LLM 层，单变量更干净）
@@ -87,8 +87,10 @@ echo "================ 前置检查 ================"
 [ -d "$CKPT_A" ] || { echo "[FAIL] A ckpt 不存在: $CKPT_A"; exit 1; }
 if [ "$USE_REPLAY" = "True" ]; then
     for t in taskA taskB taskC; do
-        [ -f "$BUF_P/$t/manifest.jsonl" ] || { echo "[FAIL] 原型 buffer 缺失: $BUF_P/$t"; exit 1; }
+        [ -f "$BUF_P/$t/manifest.jsonl" ] || { echo "[FAIL] replay buffer 缺失: $BUF_P/$t（用 BUF_ROOT 指定根目录）"; exit 1; }
     done
+    echo "[OK] replay buffer 根目录 = $BUF_P"
+    echo "     每任务样本数: taskA=$(wc -l < "$BUF_P/taskA/manifest.jsonl") taskB=$(wc -l < "$BUF_P/taskB/manifest.jsonl") taskC=$(wc -l < "$BUF_P/taskC/manifest.jsonl")"
 fi
 echo "[OK] tag = $PREFIX | specific-A 解冻层 = $TRAIN_LAYERS（共 $N_TRAIN 层，其余 L24-31 的 A 冻结）"
 echo "[OK] 动作头 A: $([ "$FREEZE_AH_A" = "True" ] && echo 冻结 || echo 解冻) | FiLM freeze=$FREEZE_FILM_STAGE2 (lr×$FILM_LR_SCALE) | shared freeze=$FREEZE_SHARED (lr×$SHARED_LR_SCALE)"
