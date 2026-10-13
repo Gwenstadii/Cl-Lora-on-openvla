@@ -63,3 +63,30 @@ ENV/
 .ipynb_checkpoints/
 方法论.md
 docs/openvla_cllora_architecture.html
+1st.md
+1st.docx
+study.md
+train.md
+tree.md
+
+# ===== Working documents / figure sources / scratch (NOT part of the code release) =====
+# --- paper & figure working directories ---
+essay/
+figs/
+final/
+docs/
+undefined/
+recovered/
+
+# --- Office working documents + Office lock files ---
+*.docx
+~$*
+
+# --- figure source decks ---
+fig3.pptx
+pic.pptx
+
+# --- experiment notes & doc-generation helpers ---
+v41.md
+科研叙事报告.md
+md_to_docx.py
